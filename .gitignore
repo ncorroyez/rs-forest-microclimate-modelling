@@ -1,0 +1,27 @@
+# .gitignore
+
+# 1. R and RStudio specific files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# 2. Data folders (CRITICAL: Do not track heavy datasets)
+data/raw/*
+data/derived/*
+!data/raw/.gitkeep
+!data/derived/.gitkeep
+
+# 3. Spatial and Heavy files (Safety net)
+*.tif
+*.tiff
+*.las
+*.laz
+*.nc
+*.csv
+*.rds
+*.sqlite
+
+# 4. OS generated files
+.DS_Store
+Thumbs.db
