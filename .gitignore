@@ -1,0 +1,17 @@
+# MuSICA run directories
+.musica_*/
+# Large data files
+*.rds
+*.nc
+MetHor*.txt
+debug_musica_9Feb.zip
+# Output HTML / generated
+*.html
+Rplot.png
+# R project lock
+.~lock.*
+# R history
+.Rhistory
+# Outputs generated at runtime
+out_files/
+outputs/
