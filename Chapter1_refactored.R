@@ -809,6 +809,64 @@ diagnose_residuals <- function(gam_scat, df_gamm, plot = TRUE) {
   data.frame(n_obs = length(resid_g), shapiro_W = unname(sw_test$statistic), shapiro_p = sw_test$p.value, excess_kurt = excess_kurt, aic_gauss = aic_g, aic_scat = aic_s, delta_aic = aic_g - aic_s, scat_preferred = (aic_g - aic_s) > 10)
 }
 
+#' Diagnostic de concurvité pour le GAMM de référence.
+#'
+#' Teste la concurvité globale (full=TRUE) et paire-à-paire (full=FALSE) pour
+#' les termes de forçage macroclimatique (Tmax, Rad, VPD, Wind) physiquement
+#' corrélés.  Lève une alerte console si le worst pairwise > 0.8 sur ce groupe.
+#' Sauvegarde deux CSV dans out_dir.
+#'
+#' @param gam_model  Modèle bam/gam ajusté (sorti de fit_reference_gamm).
+#' @param out_dir    Répertoire de sortie pour les CSV.
+#' @return Invisiblement, une liste $full et $pairwise.
+run_concurvity_audit <- function(gam_model, out_dir = "outputs/audit") {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  conc_full <- mgcv::concurvity(gam_model, full = TRUE)
+  conc_pair <- mgcv::concurvity(gam_model, full = FALSE)
+
+  cat("\n── Concurvity audit (full = TRUE) — worst-case par terme smooth ──\n")
+  print(round(conc_full, 3))
+
+  cat("\n── Concurvity audit (full = FALSE) — matrice pairwise worst ──\n")
+  worst_mat <- conc_pair[["worst"]]
+  print(round(worst_mat, 3))
+
+  # --- Alerte ciblée sur les termes macroclimatiques corrélés physiquement ---
+  clim_terms  <- c("s(Tmax_macro_sc)", "s(Rad_mean_sc)", "s(VPD_mean_sc)", "s(Wind_mean_sc)")
+  terms_found <- intersect(clim_terms, rownames(worst_mat))
+
+  if (length(terms_found) >= 2) {
+    sub_mat      <- worst_mat[terms_found, terms_found, drop = FALSE]
+    diag(sub_mat) <- NA
+    max_conc     <- max(sub_mat, na.rm = TRUE)
+
+    if (max_conc > 0.8) {
+      cat(sprintf(
+        "\n[!] CONCURVITE ELEVEE : worst pairwise macroclimat = %.3f > 0.8\n",
+        max_conc
+      ))
+      cat("    Termes concernés :", paste(terms_found, collapse = ", "), "\n")
+      cat("    → Envisager de retirer un terme redondant ou d'utiliser",
+          "un tenseur produit ti() pour contrôler la collinéarité.\n\n")
+    } else {
+      cat(sprintf(
+        "\n[ok] Concurvité acceptable : worst pairwise macroclimat = %.3f ≤ 0.8\n\n",
+        max_conc
+      ))
+    }
+  }
+
+  # --- Export CSV -------------------------------------------------------------
+  write.csv(as.data.frame(conc_full),
+            file.path(out_dir, "concurvity_full.csv"), row.names = TRUE)
+  write.csv(as.data.frame(worst_mat),
+            file.path(out_dir, "concurvity_pairwise_worst.csv"), row.names = TRUE)
+  cat(sprintf("  [concurvity] CSV sauvegardés → %s/\n", out_dir))
+
+  invisible(list(full = conc_full, pairwise = conc_pair))
+}
+
 # ==============================================================================
 # SECTION 13.  DIAGNOSTICS — per-HOBO time-series overlay
 # ==============================================================================
@@ -1601,8 +1659,10 @@ main <- function() {
     dev.off()
     print(diag_res)
     write.csv(diag_res, "outputs/gamm/gamm_residuals_stats.csv", row.names = FALSE)
+
+    conc_res <- run_concurvity_audit(gam_ref, out_dir = "outputs/audit")
   }
-  
+
   # ---- OPTIONAL: HOBO validation --------------------------------------------
   if (FLAGS$RUN_HOBO_VALIDATION) {
     cat("[HOBO] Running validation of forward scenarios at HOBO locations...\n")
