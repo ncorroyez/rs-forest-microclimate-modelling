@@ -1496,25 +1496,28 @@ main <- function() {
         summary_mode    = "median_date"
       )
 
-      # ---- Diagnostic pic proche du sol — Cluster 1 ---------------------------
-      cat("[vertical] Diagnostic pic Cluster 1 (verify_cluster1_peak)...\n")
-      c1_full <- df_sample %>% filter(as.character(Cluster) == "1")
-      if (nrow(c1_full) > 0) {
-        # Plot médian C1 : profil LAD pour vérification visuelle
-        c1_med_meta <- select_cluster_median_plots(c1_full)
-        if (!is.null(c1_med_meta) && nrow(c1_med_meta) > 0) {
-          c1_row <- df_sample %>%
-            filter(abs(x - c1_med_meta$x[1]) < 0.5,
-                   abs(y - c1_med_meta$y[1]) < 0.5) %>%
-            slice(1)
-          if (nrow(c1_row) > 0) {
-            plot_lad_profile_for_plot(
-              c1_row,
-              out_path = "outputs/h2/c1_median_lad_profile.png"
-            )
+      # ---- Profils LAD des plots médians — tous clusters ----------------------
+      cat("[vertical] Profils LAD par cluster m\u00e9dian (tous clusters)...\n")
+      medians_all <- select_cluster_median_plots(df_sample)
+      if (!is.null(medians_all) && nrow(medians_all) > 0) {
+        for (cl in unique(medians_all$Cluster)) {
+          cl_median <- medians_all %>% filter(Cluster == cl)
+          if (nrow(cl_median) == 1) {
+            cl_full <- df_sample %>%
+              filter(abs(x - cl_median$x) < 1 & abs(y - cl_median$y) < 1) %>%
+              slice(1)
+            if (nrow(cl_full) == 1) {
+              plot_lad_profile_for_plot(
+                cl_full,
+                sprintf("outputs/h2/c%s_median_lad_profile.png", cl)
+              )
+            }
           }
         }
       }
+
+      # ---- Diagnostic pic proche du sol — Cluster 1 ---------------------------
+      cat("[vertical] Diagnostic pic Cluster 1 (verify_cluster1_peak)...\n")
       verify_cluster1_peak(
         df_sample,
         real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
