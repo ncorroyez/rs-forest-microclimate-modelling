@@ -117,6 +117,7 @@ FLAGS <- list(
   USE_MACROCLIMATE_GAMM = TRUE,   # Include physical meteorology in GAMM
   GAMM_SHAPE_VAR        = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
 
+  RUN_VERTICAL_PROFILES = TRUE,   # profils verticaux Tmax par cluster médian (H2)
   RUN_HOBO_VALIDATION   = TRUE,   # MuSICA at HOBO locations
   RUN_S2_ANNEX          = FALSE,  # Sentinel-2 annex (H3) — reporter à plus tard (cf. retours encadrants)
   RUN_H1_FACTORIAL      = FALSE   # heavy, off by default
@@ -900,6 +901,250 @@ make_s2_formsh_scenario <- function(df_sample, in_dir, agg_factor = 2) {
 }
 
 # ==============================================================================
+# SECTION 16b.  VERTICAL TEMPERATURE PROFILES (H2 — by cluster median)
+# ==============================================================================
+#
+# Inspection préalable (Phase 0) a révélé la structure des NetCDF MuSICA :
+#   - Tair_z      : dims [nair=15 × time=13847]
+#   - relative_height : vecteur [nair] de hauteurs relatives (0→1)
+#   - veget_height_top: hauteur absolue du couvert (série temporelle,
+#     constante en pratique → prendre veget_height_top[1])
+#   - Axe Z absolu = relative_height × veget_height_top[1]
+
+#' Extraire le profil vertical de Tmax pour un NetCDF MuSICA.
+#'
+#' @param nc_file     Chemin vers le fichier NetCDF.
+#' @param date_seq    Dates d'intérêt (filtre sur l'été).
+#' @param summary     "mean_summer" | "canicule_date" | "median_date"
+#' @return Tibble (height_m, Tmax_z) ou NULL si échec.
+extract_vertical_tmax_profile <- function(nc_file, date_seq,
+                                           summary = "mean_summer") {
+  if (is.na(nc_file) || !file.exists(nc_file)) return(NULL)
+
+  nc <- try(nc_open(nc_file), silent = TRUE)
+  if (inherits(nc, "try-error")) return(NULL)
+
+  # Axe Z absolu depuis les variables relatives au couvert
+  rel_h <- try(ncvar_get(nc, "relative_height"), silent = TRUE)
+  h_top <- try(ncvar_get(nc, "veget_height_top"), silent = TRUE)
+  raw   <- try(get_variable(nc, "Tair_z"), silent = TRUE)
+  nc_close(nc)
+
+  if (inherits(raw, "try-error") || is.null(raw)) return(NULL)
+
+  hmax_nc <- if (!inherits(h_top, "try-error")) h_top[1] else NA_real_
+
+  # Tmax journalière par niveau nair
+  df <- raw %>%
+    mutate(
+      Tair_sim = Tair_z - 273.15,
+      time     = time - hours(2),
+      date     = as.Date(time)
+    ) %>%
+    filter(date %in% date_seq) %>%
+    group_by(nair, date) %>%
+    summarise(Tmax_daily = max(Tair_sim, na.rm = TRUE), .groups = "drop")
+
+  # Résumé selon le mode demandé
+  df_out <- switch(summary,
+    "mean_summer" = df %>%
+      group_by(nair) %>%
+      summarise(Tmax_z = mean(Tmax_daily, na.rm = TRUE), .groups = "drop"),
+
+    "canicule_date" = {
+      d_max <- df %>%
+        group_by(date) %>%
+        summarise(m = max(Tmax_daily, na.rm = TRUE), .groups = "drop") %>%
+        slice_max(m, n = 1, with_ties = FALSE) %>%
+        pull(date)
+      df %>%
+        filter(date == d_max) %>%
+        dplyr::select(nair, Tmax_z = Tmax_daily)
+    },
+
+    "median_date" = {
+      d_med <- df %>%
+        group_by(date) %>%
+        summarise(m = max(Tmax_daily, na.rm = TRUE), .groups = "drop") %>%
+        arrange(m) %>%
+        slice(ceiling(n() / 2)) %>%
+        pull(date)
+      df %>%
+        filter(date == d_med) %>%
+        dplyr::select(nair, Tmax_z = Tmax_daily)
+    }
+  )
+
+  # Rattacher l'axe Z absolu
+  if (!inherits(rel_h, "try-error") && !is.na(hmax_nc)) {
+    # relative_height est indexé 1:n_layers, aligné avec nair 1:n_layers
+    heights_all <- rel_h * hmax_nc
+    df_out$height_m <- heights_all[df_out$nair]
+  } else {
+    # Fallback : reconstruction uniforme si la variable est absente
+    n_layers <- max(df_out$nair, na.rm = TRUE)
+    df_out$height_m <- seq(0, hmax_nc, length.out = n_layers)[df_out$nair]
+  }
+
+  df_out
+}
+
+#' Identifier le plot le plus proche de la médiane structurelle de chaque cluster.
+#'
+#' Distance euclidienne normalisée sur (LAI, Hmax, fCover) centrées
+#' par la médiane du cluster.
+#'
+#' @param df_sample  cLHS avec colonnes (x, y, Cluster, LAI, Hmax, fCover).
+#' @return Tibble 1 ligne × cluster : (Cluster, x, y, LAI, Hmax, fCover, plot_id).
+select_cluster_median_plots <- function(df_sample) {
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[select_cluster_median_plots] colonne 'Cluster' absente de df_sample.")
+    return(invisible(NULL))
+  }
+
+  df_sample %>%
+    filter(!is.na(Cluster)) %>%
+    group_by(Cluster) %>%
+    mutate(
+      sd_LAI    = sd(LAI,    na.rm = TRUE),
+      sd_Hmax   = sd(Hmax,   na.rm = TRUE),
+      sd_fCover = sd(fCover, na.rm = TRUE),
+      d_med = sqrt(
+        ((LAI    - median(LAI,    na.rm = TRUE)) / pmax(sd_LAI,    1e-9))^2 +
+        ((Hmax   - median(Hmax,   na.rm = TRUE)) / pmax(sd_Hmax,   1e-9))^2 +
+        ((fCover - median(fCover, na.rm = TRUE)) / pmax(sd_fCover, 1e-9))^2
+      )
+    ) %>%
+    slice_min(d_med, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(plot_id = sprintf("X%d_Y%d", round(x), round(y))) %>%
+    dplyr::select(Cluster, x, y, LAI, Hmax, fCover, plot_id)
+}
+
+#' Produire la figure en 3 panneaux (un par cluster) : Tmax vs hauteur,
+#' Real LAD vs Uniform LAD.
+#'
+#' @param df_sample       cLHS (besoin de Cluster, LAI, Hmax, fCover, x, y).
+#' @param real_lad_dir    Dossier NetCDF du scénario H2_real_LAD.
+#' @param uniform_lad_dir Dossier NetCDF du scénario H2_uniform_LAD.
+#' @param date_seq        Dates d'intérêt (filtre été).
+#' @param out_dir         Dossier de sortie PNG/CSV.
+#' @param summary_mode    "mean_summer" | "canicule_date" | "median_date".
+#' @return Invisiblement list(plot, data, medians).
+plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
+                                         uniform_lad_dir, date_seq,
+                                         out_dir = "outputs/h2",
+                                         summary_mode = "mean_summer") {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[plot_vertical_tmax_profiles] colonne 'Cluster' absente — abandon.")
+    return(invisible(NULL))
+  }
+
+  # 1. Sélection des plots médians
+  medians <- select_cluster_median_plots(df_sample)
+  if (is.null(medians) || nrow(medians) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun plot médian sélectionné.")
+    return(invisible(NULL))
+  }
+  cat(sprintf("  [vertical profile] %d plots médians :\n", nrow(medians)))
+  print(as.data.frame(medians[, c("Cluster", "plot_id", "LAI", "Hmax", "fCover")]))
+
+  # 2. Trouver les NetCDF par pattern X{x}_Y{y}
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  profiles_meta <- medians %>%
+    rowwise() %>%
+    mutate(
+      nc_real    = find_nc(real_lad_dir,    x, y),
+      nc_uniform = find_nc(uniform_lad_dir, x, y)
+    ) %>%
+    ungroup()
+
+  missing <- profiles_meta %>%
+    filter(is.na(nc_real) | is.na(nc_uniform))
+  if (nrow(missing) > 0) {
+    warning(sprintf(
+      "[plot_vertical_tmax_profiles] NetCDF manquants pour %d plot(s) : %s",
+      nrow(missing), paste(missing$plot_id, collapse = ", ")
+    ))
+    print(missing[, c("Cluster", "plot_id", "nc_real", "nc_uniform")])
+    profiles_meta <- profiles_meta %>% filter(!is.na(nc_real) & !is.na(nc_uniform))
+  }
+  if (nrow(profiles_meta) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun NetCDF valide — abandon.")
+    return(invisible(NULL))
+  }
+
+  # 3. Extraction des profils pour chaque plot × scénario
+  df_profiles <- purrr::pmap_dfr(
+    profiles_meta,
+    function(Cluster, x, y, LAI, Hmax, fCover, plot_id, nc_real, nc_uniform, ...) {
+      prof_real <- extract_vertical_tmax_profile(nc_real,    date_seq, summary_mode)
+      prof_unif <- extract_vertical_tmax_profile(nc_uniform, date_seq, summary_mode)
+      bind_rows(
+        if (!is.null(prof_real))
+          prof_real %>% mutate(scenario = "Real LAD"),
+        if (!is.null(prof_unif))
+          prof_unif %>% mutate(scenario = "Uniform LAD")
+      ) %>%
+        mutate(Cluster = as.character(Cluster),
+               plot_id = plot_id,
+               LAI     = LAI,
+               Hmax    = Hmax)
+    }
+  )
+
+  if (nrow(df_profiles) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun profil extrait.")
+    return(invisible(NULL))
+  }
+
+  # 4. Construction du graphique
+  df_profiles <- df_profiles %>%
+    mutate(panel_label = sprintf("Cluster %s\nHmax = %.1f m | LAI = %.1f",
+                                  Cluster, Hmax, LAI))
+
+  p <- ggplot(df_profiles, aes(x = Tmax_z, y = height_m, colour = scenario)) +
+    geom_path(linewidth = 1.2) +
+    geom_point(size = 2, alpha = 0.7) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    scale_colour_manual(
+      values = c("Real LAD" = "#31688e", "Uniform LAD" = "#d8576b")
+    ) +
+    labs(
+      title    = "Profils verticaux de Tmax — Real LAD vs Uniform LAD",
+      subtitle = sprintf(
+        "Plot m\u00e9dian de chaque cluster  |  Mode : %s", summary_mode
+      ),
+      x      = expression(T[max] ~ "simul\u00e9e" ~ (degree*C)),
+      y      = "Hauteur (m)",
+      colour = "Sc\u00e9nario"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"))
+
+  # 5. Sauvegarde PNG + CSV
+  png_path <- file.path(out_dir,
+    sprintf("h2_vertical_tmax_profiles_%s.png", summary_mode))
+  csv_path <- file.path(out_dir,
+    sprintf("h2_vertical_tmax_profiles_%s.csv", summary_mode))
+
+  save_plot(p, png_path, width = 14, height = 6)
+  write.csv(df_profiles, csv_path, row.names = FALSE)
+  cat(sprintf("  [vertical profile] PNG : %s\n", png_path))
+  cat(sprintf("  [vertical profile] CSV : %s\n", csv_path))
+
+  invisible(list(plot = p, data = df_profiles, medians = medians))
+}
+
+# ==============================================================================
 # SECTION 16.  main() — orchestrator
 # ==============================================================================
 
@@ -994,6 +1239,26 @@ main <- function() {
     cat(sprintf("    mean per-plot diff (real - uniform): %.3f °C\n", mean(df_h2_w$diff, na.rm = TRUE)))
     p_h2_hw <- analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
     save_plot(p_h2_hw, "outputs/h2/h2_heatwave_histogram.png")
+
+    if (FLAGS$RUN_VERTICAL_PROFILES) {
+      cat("[vertical] Profils verticaux Tmax par cluster médian...\n")
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "mean_summer"
+      )
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "canicule_date"
+      )
+    }
   }
   
   # ---- 5. H1 — forward / LOO / factorial -----------------------------------
