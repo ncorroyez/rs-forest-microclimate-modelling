@@ -214,6 +214,21 @@ extract_macro_daily <- function(forcing_file, date_seq) {
     )
 }
 
+#' Save a ggplot to disk and return the path invisibly.
+save_plot <- function(p, path, width = 10, height = 7, dpi = 150) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  ggsave(path, p, width = width, height = height, dpi = dpi)
+  invisible(path)
+}
+
+#' Create the standard outputs/ sub-directory tree.
+setup_outputs_dirs <- function(root = "outputs") {
+  for (sd in c("clusters", "h2", "h1", "fpca", "gamm", "hobo", "s2_annex", "audit")) {
+    dir.create(file.path(root, sd), recursive = TRUE, showWarnings = FALSE)
+  }
+  invisible(root)
+}
+
 #' Read HOBO sub-canopy temperatures.
 read_hobo_daily <- function(csv_file, date_seq, df_macro, ids_to_remove) {
   read.csv(csv_file) %>%
@@ -249,30 +264,30 @@ build_forest_dataframe <- function(r_stack) {
        z_breaks = as.numeric(gsub("LAD_Layer_", "", colnames(mat_lad))))
 }
 
-optimise_k_elbow <- function(df_scaled, k_range = 1:10, plot_elbow = TRUE) {
+optimise_k_elbow <- function(df_scaled, k_range = 1:10) {
   wss <- vapply(k_range, function(k) {
     kmeans(df_scaled, centers = k, nstart = 25, iter.max = 100)$tot.withinss
   }, numeric(1))
-  
+
   p1 <- c(k_range[1], wss[1]); p2 <- c(k_range[length(k_range)], wss[length(wss)])
   d <- vapply(seq_along(k_range), function(i) {
     p0 <- c(k_range[i], wss[i])
     abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) /
       sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
   }, numeric(1))
-  
+
   opt_k <- k_range[which.max(d)]
-  
-  if (plot_elbow) {
-    p <- ggplot(data.frame(k = k_range, WSS = wss), aes(x = k, y = WSS)) +
-      geom_line(colour = "grey50", linewidth = 1) + geom_point(size = 3, colour = "#31688e") +
-      geom_vline(xintercept = opt_k, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
-      scale_x_continuous(breaks = k_range) +
-      labs(title = "Elbow Method for K-means Stratification", subtitle = sprintf("Optimal k = %d", opt_k),
-           x = "Clusters (k)", y = "Total Within Sum of Squares")
-    print(p)
-  }
-  list(opt_k = opt_k, wss = wss, k_range = k_range)
+
+  p <- ggplot(data.frame(k = k_range, WSS = wss), aes(x = k, y = WSS)) +
+    geom_line(colour = "grey50", linewidth = 1) +
+    geom_point(size = 3, colour = "#31688e") +
+    geom_vline(xintercept = opt_k, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
+    scale_x_continuous(breaks = k_range) +
+    labs(title = "Elbow Method for K-means Stratification",
+         subtitle = sprintf("Optimal k = %d", opt_k),
+         x = "Clusters (k)", y = "Total Within Sum of Squares")
+
+  list(opt_k = opt_k, wss = wss, k_range = k_range, plot = p)
 }
 
 label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
@@ -280,9 +295,12 @@ label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"
   ok    <- complete.cases(df_in)
   df_scaled <- scale(df_in[ok, ])
 
+  elbow_plot <- NULL
   if (is.null(k)) {
     cat("  [Auto-K] Determining optimal number of clusters via elbow method...\n")
-    k <- optimise_k_elbow(df_scaled, k_range = 1:max_k)$opt_k
+    elbow_res  <- optimise_k_elbow(df_scaled, k_range = 1:max_k)
+    k          <- elbow_res$opt_k
+    elbow_plot <- elbow_res$plot
     cat(sprintf("  [Auto-K] Optimal k selected: %d\n", k))
   }
 
@@ -290,7 +308,7 @@ label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"
   df_forest$Cluster <- NA_integer_
   df_forest$Cluster[ok] <- km$cluster
   df_forest$Cluster <- factor(df_forest$Cluster)
-  df_forest
+  list(df = df_forest, elbow_plot = elbow_plot)
 }
 
 #' Profil LAD moyen par cluster — base d'interprétation typologique.
@@ -552,6 +570,7 @@ analyse_h2_distribution <- function(df_h2_wide, df_macro, threshold = 30) {
   p <- ggplot(df, aes(x = diff, fill = period)) + geom_histogram(bins = 80, alpha = 0.6, position = "identity") + geom_vline(xintercept = 0, linetype = "dashed") +
     scale_fill_manual(values = c(normal = "#31688e", heatwave = "#d8576b")) + labs(title = "H2 — distribution of (Real - Uniform) ΔTmax", subtitle = "Split by macroclimate regime", x = "ΔTmax difference (°C)", y = "Count")
   print(p)
+  invisible(p)
 }
 
 validate_hobo_paired <- function(hobo_res) {
@@ -590,23 +609,29 @@ plot_forward_curve <- function(df_scores, forward_order) {
 # SECTION 11.  SHAPE METRICS (FPCA & Height of Median LAI)
 # ==============================================================================
 
-optimise_nbasis <- function(arg_vals, mat_lad_norm, nbasis_range = 4:15, plot_gcv = TRUE) {
+optimise_nbasis <- function(arg_vals, mat_lad_norm, nbasis_range = 4:15) {
   gcv <- vapply(nbasis_range, function(nb) {
     bb <- create.bspline.basis(c(min(arg_vals), max(arg_vals)), nbasis = nb)
     mean(smooth.basis(arg_vals, t(mat_lad_norm), bb)$gcv)
   }, numeric(1))
-  
+
   p1 <- c(nbasis_range[1], gcv[1]); p2 <- c(nbasis_range[length(nbasis_range)], gcv[length(gcv)])
   d <- vapply(seq_along(nbasis_range), function(i) {
     p0 <- c(nbasis_range[i], gcv[i])
-    abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) / sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
+    abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) /
+      sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
   }, numeric(1))
   opt_nb <- nbasis_range[which.max(d)]
-  if (plot_gcv) {
-    p <- ggplot(data.frame(nbasis = nbasis_range, GCV = gcv), aes(x = nbasis, y = GCV)) + geom_line(colour = "grey50", linewidth = 1) + geom_point(size = 3, colour = "#31688e") + geom_vline(xintercept = opt_nb, linetype = "dashed", colour = "#d8576b", linewidth = 1) + labs(title = "GCV Curve for FPCA Basis Functions", x = "Number of B-spline basis functions", y = "Mean GCV") + theme_bw()
-    print(p)
-  }
-  list(opt = opt_nb, gcv = gcv, range = nbasis_range)
+
+  p <- ggplot(data.frame(nbasis = nbasis_range, GCV = gcv), aes(x = nbasis, y = GCV)) +
+    geom_line(colour = "grey50", linewidth = 1) +
+    geom_point(size = 3, colour = "#31688e") +
+    geom_vline(xintercept = opt_nb, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
+    labs(title = "GCV Curve for FPCA Basis Functions",
+         x = "Number of B-spline basis functions", y = "Mean GCV") +
+    theme_bw()
+
+  list(opt = opt_nb, gcv = gcv, range = nbasis_range, plot = p)
 }
 
 compute_fpca <- function(mat_lad, hmax_vec, z_breaks, n_harm = 3) {
@@ -623,7 +648,8 @@ compute_fpca <- function(mat_lad, hmax_vec, z_breaks, n_harm = 3) {
   basis  <- create.bspline.basis(c(0, 1), nbasis = opt$opt)
   fd_obj <- Data2fd(z_rel, t(mat_rel), basis)
   fpca   <- pca.fd(fd_obj, nharm = n_harm)
-  list(fpca = fpca, fd_obj = fd_obj, mat_rel = mat_rel, z_rel = z_rel, nbasis_opt = opt$opt, varprop = fpca$varprop)
+  list(fpca = fpca, fd_obj = fd_obj, mat_rel = mat_rel, z_rel = z_rel,
+       nbasis_opt = opt$opt, varprop = fpca$varprop, gcv_plot = opt$plot)
 }
 
 plot_fpc_harmonics <- function(fpca_res, mat_lad_real, z_breaks, hmax_vec) {
@@ -878,27 +904,53 @@ make_s2_formsh_scenario <- function(df_sample, in_dir, agg_factor = 2) {
 # ==============================================================================
 
 main <- function() {
-  
+
+  cat("[0/7] Setup output directories...\n")
+  setup_outputs_dirs()
+
   cat("[1/7] Loading LiDAR rasters...\n")
   rasters <- load_lidar_rasters(CFG$in_dir, CFG$agg_factor)
-  
+
   cat("[2/7] Building forest dataframe...\n")
-  fd        <- build_forest_dataframe(rasters$stack)
-  df_forest <- label_clusters(fd$df, k = CFG$k_clusters)
+  fd      <- build_forest_dataframe(rasters$stack)
+  cl_res  <- label_clusters(fd$df, k = CFG$k_clusters)
+  df_forest <- cl_res$df
+  if (!is.null(cl_res$elbow_plot)) {
+    save_plot(cl_res$elbow_plot, "outputs/clusters/kmeans_elbow.png", width = 8, height = 5)
+    print(cl_res$elbow_plot)
+  }
 
   df_macro <- extract_macro_daily(CFG$forcing_file, CFG$date_seq)
 
   # ---- 2b. FPCA sur la forêt ENTIÈRE (avant échantillonnage) -----------------
-  # Recommandation encadrants : l'ACP fonctionnelle doit caractériser la
-  # variabilité de l'ensemble du peuplement, pas du seul échantillon cLHS.
   cat("[2b] FPCA sur la forêt entière (avant cLHS)...\n")
   fpca_res <- compute_fpca(fd$mat_lad, fd$df$Hmax, fd$z_breaks)
+  fpc_var  <- fpca_res$varprop
   cat(sprintf("    FPC variance (forêt entière) : %s\n",
-              paste(round(100 * fpca_res$varprop, 1), collapse = " / ")))
-  print(plot_fpc_harmonics(fpca_res, fd$mat_lad, fd$z_breaks, fd$df$Hmax))
-  print(plot_fpc_loadings(fpca_res))
-  print(plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster))
-  print(plot_cluster_mean_profiles(df_forest, fd$mat_lad, fd$z_breaks))
+              paste(round(100 * fpc_var, 1), collapse = " / ")))
+
+  writeLines(sprintf("FPC1: %.1f%%\nFPC2: %.1f%%\nFPC3: %.1f%%",
+                     100 * fpc_var[1], 100 * fpc_var[2], 100 * fpc_var[3]),
+             "outputs/fpca/fpca_variance.txt")
+
+  save_plot(fpca_res$gcv_plot, "outputs/fpca/fpca_gcv_curve.png", width = 8, height = 5)
+  print(fpca_res$gcv_plot)
+
+  p_fpca_harm <- plot_fpc_harmonics(fpca_res, fd$mat_lad, fd$z_breaks, fd$df$Hmax)
+  save_plot(p_fpca_harm, "outputs/fpca/fpca_harmonics.png", width = 12, height = 6)
+  print(p_fpca_harm)
+
+  p_fpca_load <- plot_fpc_loadings(fpca_res)
+  save_plot(p_fpca_load, "outputs/fpca/fpca_loadings.png", width = 10, height = 5)
+  print(p_fpca_load)
+
+  p_fpca_scat <- plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster)
+  save_plot(p_fpca_scat, "outputs/fpca/fpca_scatters.png", width = 12, height = 5)
+  print(p_fpca_scat)
+
+  p_clust_prof <- plot_cluster_mean_profiles(df_forest, fd$mat_lad, fd$z_breaks)
+  save_plot(p_clust_prof, "outputs/clusters/cluster_mean_profiles.png", width = 12, height = 6)
+  print(p_clust_prof)
 
   # ---- 3. cLHS sampling -------------------------------------------------------
   if (FLAGS$RUN_CLHS) {
@@ -931,10 +983,17 @@ main <- function() {
     df_h2    <- extract_all_scenarios(h2_paths, df_macro, CFG$date_seq)
     df_h2_w  <- summarise_h2(df_h2)
     
-    print(plot_h2_distributions(df_h2))
-    print(plot_h2_paired(df_h2_w))
+    p_h2_dist <- plot_h2_distributions(df_h2)
+    save_plot(p_h2_dist, "outputs/h2/h2_distributions.png")
+    print(p_h2_dist)
+
+    p_h2_pair <- plot_h2_paired(df_h2_w)
+    save_plot(p_h2_pair, "outputs/h2/h2_paired_real_vs_uniform.png")
+    print(p_h2_pair)
+
     cat(sprintf("    mean per-plot diff (real - uniform): %.3f °C\n", mean(df_h2_w$diff, na.rm = TRUE)))
-    analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
+    p_h2_hw <- analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
+    save_plot(p_h2_hw, "outputs/h2/h2_heatwave_histogram.png")
   }
   
   # ---- 5. H1 — forward / LOO / factorial -----------------------------------
@@ -962,11 +1021,17 @@ main <- function() {
   df_all_scenarios <- extract_all_scenarios(scenario_paths, df_macro, CFG$date_seq)
   df_scores        <- score_scenarios_vs_reference(df_all_scenarios, ref_sc$name)
   print(df_scores)
-  print(plot_scenario_hierarchy(df_scores, ref_sc$name))
-  
+  write.csv(df_scores, "outputs/h1/h1_scores.csv", row.names = FALSE)
+
+  p_h1_hier <- plot_scenario_hierarchy(df_scores, ref_sc$name)
+  save_plot(p_h1_hier, "outputs/h1/h1_hierarchy.png")
+  print(p_h1_hier)
+
   if (FLAGS$RUN_H1_FORWARD) {
     forward_order <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
-    print(plot_forward_curve(df_scores, forward_order))
+    p_h1_fwd <- plot_forward_curve(df_scores, forward_order)
+    save_plot(p_h1_fwd, "outputs/h1/h1_forward_curve.png")
+    print(p_h1_fwd)
   }
   
   # ---- 6. GAMM emulator -----------------------------------------------------
@@ -990,15 +1055,20 @@ main <- function() {
     gam_ref <- fit_reference_gamm(df_gamm,
                                    shape_type      = FLAGS$GAMM_SHAPE_VAR,
                                    use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
+    capture.output(summary(gam_ref), file = "outputs/gamm/gamm_summary.txt")
     print(summary(gam_ref))
 
-    p_effects <- plot_gamm_marginal_effects(gam_ref,
-                                             shape_type      = FLAGS$GAMM_SHAPE_VAR,
-                                             use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
-    print(p_effects)
+    p_gamm_eff <- plot_gamm_marginal_effects(gam_ref,
+                                              shape_type      = FLAGS$GAMM_SHAPE_VAR,
+                                              use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
+    save_plot(p_gamm_eff, "outputs/gamm/gamm_marginal_effects.png", width = 12, height = 8)
+    print(p_gamm_eff)
 
+    png("outputs/gamm/gamm_residuals_diagnostic.png", width = 1200, height = 900, res = 120)
     diag_res <- diagnose_residuals(gam_ref, df_gamm)
+    dev.off()
     print(diag_res)
+    write.csv(diag_res, "outputs/gamm/gamm_residuals_stats.csv", row.names = FALSE)
   }
   
   # ---- OPTIONAL: HOBO validation --------------------------------------------
@@ -1012,15 +1082,20 @@ main <- function() {
     
     hobo_res <- validate_scenarios_at_hobos(df_hobo_inputs, df_hobo_daily, hobo_scs, parent_dir = CFG$out_hobo, df_macro = df_macro, date_seq = CFG$date_seq)
     print(hobo_res$metrics)
-    print(plot_hobo_validation(hobo_res$metrics))
-    
-    fw_names <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
+    write.csv(hobo_res$metrics, "outputs/hobo/hobo_metrics.csv", row.names = FALSE)
+
+    p_hobo_val <- plot_hobo_validation(hobo_res$metrics)
+    save_plot(p_hobo_val, "outputs/hobo/hobo_validation_rmse.png")
+    print(p_hobo_val)
+
+    fw_names  <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
     rep_hobos <- pick_representative_hobos(df_hobo_daily)
-    
+
     df_real <- hobo_res$daily %>% filter(scenario == fw_names["Full_real"]) %>% mutate(Tmax_micro = Delta_sim + Tmax_macro)
     df_unif <- hobo_res$daily %>% filter(scenario == fw_names["LAI_Hmax_fCover"]) %>% mutate(Tmax_micro = Delta_sim + Tmax_macro)
-    
+
     p_ts <- plot_timeseries_faceted(rep_hobos, df_hobo_daily, df_real, df_unif, df_macro)
+    save_plot(p_ts, "outputs/hobo/hobo_timeseries_representatives.png", width = 12, height = 10)
     print(p_ts)
   }
   
@@ -1053,8 +1128,9 @@ main <- function() {
            x = expression(Delta * T[max] ~ (degree*C)), y = "Density", fill = "Input Source", colour = "Input Source") +
       theme(legend.position = "bottom")
     
+    save_plot(p_s2_density, "outputs/s2_annex/s2_density.png")
     print(p_s2_density)
-    
+
     axis_lims_s2 <- c(min(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE), max(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE))
     
     p_s2_paired <- ggplot(df_s2_matched, aes(x = Delta_ref, y = Delta_Tmax)) +
@@ -1067,9 +1143,13 @@ main <- function() {
            x = expression("LiDAR (Full 3D Real)" ~ Delta * T[max] ~ (degree*C)), y = expression("Sentinel-2 + FORMS-H" ~ Delta * T[max] ~ (degree*C))) +
       theme_bw(base_size = 14) + theme(legend.position = "right", plot.title = element_text(face = "bold"))
     
+    save_plot(p_s2_paired, "outputs/s2_annex/s2_paired.png")
     print(p_s2_paired)
+
+    writeLines(sprintf("R2: %.4f\nRMSE: %.4f deg C\nBias: %.4f deg C", s2_r2, s2_rmse, s2_bias),
+               "outputs/s2_annex/s2_metrics.txt")
   }
-  
+
   cat("\n[done]\n")
   invisible(NULL)
 }
