@@ -598,13 +598,13 @@ validate_hobo_paired <- function(hobo_res) {
 #'   4. Histogramme amplitude temporelle de l'effet LAD par plot (PNG)
 #'
 #' @param df_h2_w      Dataframe wide H2 (x, y, date, Real, Uniform, diff).
-#' @param df_sample    Dataframe cLHS (x, y, Archetype, LAI, Hmax, fCover, ...).
+#' @param df_sample    Dataframe cLHS (x, y, Cluster, LAI, Hmax, fCover, ...).
 #' @param df_macro     Dataframe macroclimat journalier (date, Tmax_macro, ...).
 #' @param h_median_vec Vecteur numérique H_median par plot (même ordre que
 #'                     df_sample) ; NULL si non disponible.
 #' @param fpc_scores   Matrice nx3 des scores FPC1/2/3 ; NULL si non disponible.
 #' @param out_dir      Répertoire de sortie pour PNG et CSV.
-#' @return Invisiblement : liste $per_plot, $cor_tbl, $tbl_archetype.
+#' @return Invisiblement : liste $per_plot, $cor_tbl, $tbl_cluster.
 analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
                                   h_median_vec = NULL, fpc_scores = NULL,
                                   out_dir = "outputs/audit") {
@@ -612,8 +612,8 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
 
   # --- Métadonnées plot -------------------------------------------------------
   df_meta <- df_sample %>%
-    dplyr::select(x, y, Archetype, LAI, Hmax, fCover) %>%
-    mutate(Archetype = as.factor(Archetype))
+    dplyr::select(x, y, Cluster, LAI, Hmax, fCover) %>%
+    mutate(Cluster = as.factor(Cluster))
 
   # --- Agrégation per-plot (moyenne + quantiles sur les dates d'été) ----------
   df_per_plot <- df_h2_w %>%
@@ -628,44 +628,44 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
     inner_join(df_meta, by = c("x", "y")) %>%
     mutate(amplitude = diff_q95 - diff_q05)
 
-  # ── Livrable 1 — Boxplot diff par archétype ─────────────────────────────────
-  arch_stats <- df_per_plot %>%
-    group_by(Archetype) %>%
+  # ── Livrable 1 — Boxplot diff par cluster ────────────────────────────────────
+  cl_stats <- df_per_plot %>%
+    group_by(Cluster) %>%
     summarise(n = n(), median_diff = median(diff_mean, na.rm = TRUE), .groups = "drop")
 
   subtitle_1 <- paste(
-    sprintf("Arch.%s : n=%d, méd.=%+.3f°C",
-            arch_stats$Archetype, arch_stats$n, arch_stats$median_diff),
+    sprintf("Cl.%s : n=%d, m\u00e9d.=%+.3f\u00b0C",
+            cl_stats$Cluster, cl_stats$n, cl_stats$median_diff),
     collapse = " | "
   )
 
   p1 <- ggplot(df_per_plot,
-               aes(x = diff_mean, y = Archetype, fill = Archetype, colour = Archetype)) +
+               aes(x = diff_mean, y = Cluster, fill = Cluster, colour = Cluster)) +
     geom_boxplot(alpha = 0.4, outlier.shape = NA) +
     geom_jitter(height = 0.2, alpha = 0.3, size = 1.5) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey30") +
     scale_fill_viridis_d(option = "turbo") +
     scale_colour_viridis_d(option = "turbo") +
     labs(
-      title    = "H2 \u2014 Structure de l\u2019effet LAD par arch\u00e9type (per-plot mean)",
+      title    = "H2 \u2014 Structure de l\u2019effet LAD par cluster (per-plot mean)",
       subtitle = subtitle_1,
       x        = "diff Real \u2013 Uniform \u0394Tmax (\u00b0C)",
-      y        = "Arch\u00e9type"
+      y        = "Cluster"
     ) +
     theme(legend.position = "none")
 
   print(p1)
-  ggsave(file.path(out_dir, "h2_boxplot_archetype.png"), p1,
+  ggsave(file.path(out_dir, "h2_boxplot_cluster.png"), p1,
          width = 10, height = 6, dpi = 150)
 
-  # ── Livrable 2 — Table heatwave × archétype ─────────────────────────────────
+  # ── Livrable 2 — Table heatwave × cluster ────────────────────────────────────
   df_dates <- df_h2_w %>%
     left_join(df_macro %>% dplyr::select(date, Tmax_macro), by = "date") %>%
     mutate(period = ifelse(Tmax_macro >= 30, "heatwave", "normal")) %>%
-    inner_join(df_meta %>% dplyr::select(x, y, Archetype), by = c("x", "y"))
+    inner_join(df_meta %>% dplyr::select(x, y, Cluster), by = c("x", "y"))
 
   tbl2 <- df_dates %>%
-    group_by(Archetype, period) %>%
+    group_by(Cluster, period) %>%
     summarise(
       n           = n(),
       median_diff = median(diff, na.rm = TRUE),
@@ -675,13 +675,13 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
       q95         = quantile(diff, 0.95, na.rm = TRUE),
       .groups     = "drop"
     ) %>%
-    arrange(Archetype, period)
+    arrange(Cluster, period)
 
-  write.csv(tbl2, file.path(out_dir, "h2_structure_by_archetype.csv"), row.names = FALSE)
-  cat("\n\u2500\u2500 H2 Structure : diff par arch\u00e9type \u00d7 p\u00e9riode \u2500\u2500\n")
-  for (arch in levels(tbl2$Archetype)) {
-    sub <- tbl2 %>% filter(Archetype == arch)
-    cat(sprintf("  Arch\u00e9type %s:\n", arch))
+  write.csv(tbl2, file.path(out_dir, "h2_structure_by_cluster.csv"), row.names = FALSE)
+  cat("\n\u2500\u2500 H2 Structure : diff par cluster \u00d7 p\u00e9riode \u2500\u2500\n")
+  for (cl in levels(tbl2$Cluster)) {
+    sub <- tbl2 %>% filter(Cluster == cl)
+    cat(sprintf("  Cluster %s:\n", cl))
     for (i in seq_len(nrow(sub))) {
       cat(sprintf(
         "    %-10s  n=%5d  m\u00e9d=%+.3f\u00b0C  moy=%+.3f\u00b0C  sd=%.3f\u00b0C  [q05=%+.3f ; q95=%+.3f]\n",
@@ -690,7 +690,7 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
       ))
     }
   }
-  cat(sprintf("  \u2192 CSV : %s/h2_structure_by_archetype.csv\n", out_dir))
+  cat(sprintf("  \u2192 CSV : %s/h2_structure_by_cluster.csv\n", out_dir))
 
   # ── Livrable 3 — Corrélation diff ↔ métriques structurelles ─────────────────
   df_corr <- df_per_plot %>% dplyr::select(x, y, diff_mean, LAI, Hmax, fCover)
@@ -758,7 +758,7 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
   pct_gt1 <- 100 * mean(df_per_plot$amplitude > 1, na.rm = TRUE)
   med_amp  <- median(df_per_plot$amplitude, na.rm = TRUE)
 
-  p4 <- ggplot(df_per_plot, aes(x = amplitude, fill = Archetype)) +
+  p4 <- ggplot(df_per_plot, aes(x = amplitude, fill = Cluster)) +
     geom_histogram(alpha = 0.5, position = "identity", bins = 40) +
     geom_vline(xintercept = med_amp, linetype = "dashed",
                colour = "black", linewidth = 1) +
@@ -780,7 +780,7 @@ analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
 
   cat(sprintf("\n[H2 structure] 5 livrables produits dans %s/\n", out_dir))
   invisible(list(per_plot = df_per_plot, cor_tbl = df_cor_tbl,
-                 tbl_archetype = tbl2))
+                 tbl_cluster = tbl2))
 }
 
 # ==============================================================================
