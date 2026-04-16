@@ -338,7 +338,7 @@ plot_cluster_mean_profiles <- function(df_forest, mat_lad, z_breaks) {
     scale_colour_viridis_d(option = "turbo") +
     labs(
       title    = "Profil LAD moyen par cluster \u2014 base d\u2019interpr\u00e9tation typologique",
-      subtitle = "K-means sur LAI, Hmax, fCover (forêt entière) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
+      subtitle = "K-means sur LAI, Hmax, fCover (for\u00eat enti\u00e8re) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
       x        = "Densit\u00e9 foliaire LAD (m\u207b\u00b9)",
       y        = "Hauteur (m)"
     ) +
