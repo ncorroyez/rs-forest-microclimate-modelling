@@ -95,8 +95,8 @@ CFG <- list(
   date_seq        = seq(as.Date("2021-06-01"), as.Date("2021-09-30"), by = "day"),
   ids_to_remove   = c("41_13", "41_14", "41_20", "41_41", "41_50", "41_51", "41_53"),
   agg_factor      = 2,        # 10 m → 20 m aggregation
-  n_per_archetype = 100,      # cLHS sample size per archetype
-  k_clusters      = NULL,     # K-means clusters for archetype labelling
+  n_per_cluster   = 100,      # cLHS sample size per cluster
+  k_clusters      = NULL,     # K-means cluster assignment per plot
   heatwave_thr    = 30,       # °C threshold for heatwave subset
   out_h2          = "out_files/H2_uniform_vs_real",
   out_h1_forward  = "out_files/H1_forward",
@@ -112,14 +112,14 @@ FLAGS <- list(
   RUN_H2_UNIFORM_VS_REAL= TRUE,   # H2 first pass
   RUN_H1_FORWARD        = TRUE,   # forward inclusion
   RUN_H1_LOO            = TRUE,   # leave-one-out
-  RUN_FPCA              = TRUE,   # Always run FPCA to analyze shapes
-  
+
   RUN_GAMM_EMULATOR     = TRUE,   # Statistical emulator
   USE_MACROCLIMATE_GAMM = TRUE,   # Include physical meteorology in GAMM
-  GAMM_SHAPE_VAR        = "H_MEDIAN",  # Choose shape predictor: "FPC", "H_MEDIAN", or "NONE"
-  
+  GAMM_SHAPE_VAR        = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
+
+  RUN_VERTICAL_PROFILES = TRUE,   # profils verticaux Tmax par cluster médian (H2)
   RUN_HOBO_VALIDATION   = TRUE,   # MuSICA at HOBO locations
-  RUN_S2_ANNEX          = TRUE,   # Sentinel-2 comparison (H3)
+  RUN_S2_ANNEX          = FALSE,  # Sentinel-2 annex (H3) — reporter à plus tard (cf. retours encadrants)
   RUN_H1_FACTORIAL      = FALSE   # heavy, off by default
 )
 
@@ -215,6 +215,21 @@ extract_macro_daily <- function(forcing_file, date_seq) {
     )
 }
 
+#' Save a ggplot to disk and return the path invisibly.
+save_plot <- function(p, path, width = 10, height = 7, dpi = 150) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  ggsave(path, p, width = width, height = height, dpi = dpi)
+  invisible(path)
+}
+
+#' Create the standard outputs/ sub-directory tree.
+setup_outputs_dirs <- function(root = "outputs") {
+  for (sd in c("clusters", "h2", "h1", "fpca", "gamm", "hobo", "s2_annex", "audit")) {
+    dir.create(file.path(root, sd), recursive = TRUE, showWarnings = FALSE)
+  }
+  invisible(root)
+}
+
 #' Read HOBO sub-canopy temperatures.
 read_hobo_daily <- function(csv_file, date_seq, df_macro, ids_to_remove) {
   read.csv(csv_file) %>%
@@ -250,61 +265,97 @@ build_forest_dataframe <- function(r_stack) {
        z_breaks = as.numeric(gsub("LAD_Layer_", "", colnames(mat_lad))))
 }
 
-optimise_k_elbow <- function(df_scaled, k_range = 1:10, plot_elbow = TRUE) {
+optimise_k_elbow <- function(df_scaled, k_range = 1:10) {
   wss <- vapply(k_range, function(k) {
     kmeans(df_scaled, centers = k, nstart = 25, iter.max = 100)$tot.withinss
   }, numeric(1))
-  
+
   p1 <- c(k_range[1], wss[1]); p2 <- c(k_range[length(k_range)], wss[length(wss)])
   d <- vapply(seq_along(k_range), function(i) {
     p0 <- c(k_range[i], wss[i])
     abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) /
       sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
   }, numeric(1))
-  
+
   opt_k <- k_range[which.max(d)]
-  
-  if (plot_elbow) {
-    p <- ggplot(data.frame(k = k_range, WSS = wss), aes(x = k, y = WSS)) +
-      geom_line(colour = "grey50", linewidth = 1) + geom_point(size = 3, colour = "#31688e") +
-      geom_vline(xintercept = opt_k, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
-      scale_x_continuous(breaks = k_range) +
-      labs(title = "Elbow Method for K-means Stratification", subtitle = sprintf("Optimal k = %d", opt_k),
-           x = "Clusters (k)", y = "Total Within Sum of Squares")
-    print(p)
-  }
-  list(opt_k = opt_k, wss = wss, k_range = k_range)
+
+  p <- ggplot(data.frame(k = k_range, WSS = wss), aes(x = k, y = WSS)) +
+    geom_line(colour = "grey50", linewidth = 1) +
+    geom_point(size = 3, colour = "#31688e") +
+    geom_vline(xintercept = opt_k, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
+    scale_x_continuous(breaks = k_range) +
+    labs(title = "Elbow Method for K-means Stratification",
+         subtitle = sprintf("Optimal k = %d", opt_k),
+         x = "Clusters (k)", y = "Total Within Sum of Squares")
+
+  list(opt_k = opt_k, wss = wss, k_range = k_range, plot = p)
 }
 
-label_archetypes <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
+label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
   df_in <- df_forest %>% dplyr::select(all_of(vars))
   ok    <- complete.cases(df_in)
   df_scaled <- scale(df_in[ok, ])
-  
+
+  elbow_plot <- NULL
   if (is.null(k)) {
     cat("  [Auto-K] Determining optimal number of clusters via elbow method...\n")
-    k <- optimise_k_elbow(df_scaled, k_range = 1:max_k)$opt_k
+    elbow_res  <- optimise_k_elbow(df_scaled, k_range = 1:max_k)
+    k          <- elbow_res$opt_k
+    elbow_plot <- elbow_res$plot
     cat(sprintf("  [Auto-K] Optimal k selected: %d\n", k))
   }
-  
+
   km <- kmeans(df_scaled, centers = k, iter.max = 100, nstart = 25)
-  df_forest$Archetype <- NA_integer_
-  df_forest$Archetype[ok] <- km$cluster
-  df_forest$Archetype <- factor(df_forest$Archetype)
-  df_forest
+  df_forest$Cluster <- NA_integer_
+  df_forest$Cluster[ok] <- km$cluster
+  df_forest$Cluster <- factor(df_forest$Cluster)
+  list(df = df_forest, elbow_plot = elbow_plot)
+}
+
+#' Profil LAD moyen par cluster — base d'interprétation typologique.
+#'
+#' Permet de nommer visuellement les clusters (bottom-heavy, top-heavy, etc.)
+#' en affichant le profil moyen de chaque groupe dans l'espace de hauteur absolu.
+#'
+#' @param df_forest Dataframe avec colonnes x, y, Cluster (issu de label_clusters).
+#' @param mat_lad   Matrice LAD alignée ligne-à-ligne avec df_forest.
+#' @param z_breaks  Vecteur de hauteurs (m) correspondant aux colonnes de mat_lad.
+plot_cluster_mean_profiles <- function(df_forest, mat_lad, z_breaks) {
+  valid <- !is.na(df_forest$Cluster)
+  clusters <- levels(df_forest$Cluster[valid])
+
+  df_profiles <- lapply(clusters, function(cl) {
+    idx <- which(df_forest$Cluster == cl & !is.na(df_forest$Cluster))
+    mean_prof <- colMeans(mat_lad[idx, , drop = FALSE], na.rm = TRUE)
+    data.frame(height = z_breaks, density = mean_prof, Cluster = cl, n = length(idx))
+  })
+  df_profiles <- bind_rows(df_profiles) %>%
+    mutate(label = sprintf("Cluster %s\n(n = %d)", Cluster, n))
+
+  ggplot(df_profiles, aes(x = density, y = height, colour = Cluster)) +
+    geom_path(linewidth = 1.2) +
+    facet_wrap(~ label, nrow = 1) +
+    scale_colour_viridis_d(option = "turbo") +
+    labs(
+      title    = "Profil LAD moyen par cluster \u2014 base d\u2019interpr\u00e9tation typologique",
+      subtitle = "K-means sur LAI, Hmax, fCover (forêt entière) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
+      x        = "Densit\u00e9 foliaire LAD (m\u207b\u00b9)",
+      y        = "Hauteur (m)"
+    ) +
+    theme(legend.position = "none")
 }
 
 # ==============================================================================
 # SECTION 4.  cLHS SAMPLING
 # ==============================================================================
 
-sample_clhs_per_archetype <- function(df_forest, n_per_archetype = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
+sample_clhs_per_cluster <- function(df_forest, n_per_cluster = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
   df_forest %>%
-    filter(!is.na(Archetype)) %>%
-    split(.$Archetype) %>%
+    filter(!is.na(Cluster)) %>%
+    split(.$Cluster) %>%
     map_dfr(function(df_sub) {
       df_lhs   <- df_sub %>% dplyr::select(x, y, all_of(vars))
-      n_target <- min(n_per_archetype, nrow(df_sub))
+      n_target <- min(n_per_cluster, nrow(df_sub))
       lhs_res  <- clhs::clhs(df_lhs, size = n_target, iter = iter, simple = FALSE, progress = FALSE)
       df_sub[lhs_res$index_samples, ]
     })
@@ -476,7 +527,7 @@ extract_all_scenarios <- function(scenario_paths, df_macro, date_seq) {
 }
 
 join_with_sample <- function(df_daily, df_sample) {
-  df_meta <- df_sample %>% dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
+  df_meta <- df_sample %>% dplyr::select(x, y, Cluster, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
   df_daily %>% inner_join(df_meta, by = c("x", "y"))
 }
 
@@ -520,6 +571,7 @@ analyse_h2_distribution <- function(df_h2_wide, df_macro, threshold = 30) {
   p <- ggplot(df, aes(x = diff, fill = period)) + geom_histogram(bins = 80, alpha = 0.6, position = "identity") + geom_vline(xintercept = 0, linetype = "dashed") +
     scale_fill_manual(values = c(normal = "#31688e", heatwave = "#d8576b")) + labs(title = "H2 — distribution of (Real - Uniform) ΔTmax", subtitle = "Split by macroclimate regime", x = "ΔTmax difference (°C)", y = "Count")
   print(p)
+  invisible(p)
 }
 
 validate_hobo_paired <- function(hobo_res) {
@@ -558,23 +610,29 @@ plot_forward_curve <- function(df_scores, forward_order) {
 # SECTION 11.  SHAPE METRICS (FPCA & Height of Median LAI)
 # ==============================================================================
 
-optimise_nbasis <- function(arg_vals, mat_lad_norm, nbasis_range = 4:15, plot_gcv = TRUE) {
+optimise_nbasis <- function(arg_vals, mat_lad_norm, nbasis_range = 4:15) {
   gcv <- vapply(nbasis_range, function(nb) {
     bb <- create.bspline.basis(c(min(arg_vals), max(arg_vals)), nbasis = nb)
     mean(smooth.basis(arg_vals, t(mat_lad_norm), bb)$gcv)
   }, numeric(1))
-  
+
   p1 <- c(nbasis_range[1], gcv[1]); p2 <- c(nbasis_range[length(nbasis_range)], gcv[length(gcv)])
   d <- vapply(seq_along(nbasis_range), function(i) {
     p0 <- c(nbasis_range[i], gcv[i])
-    abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) / sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
+    abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) /
+      sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
   }, numeric(1))
   opt_nb <- nbasis_range[which.max(d)]
-  if (plot_gcv) {
-    p <- ggplot(data.frame(nbasis = nbasis_range, GCV = gcv), aes(x = nbasis, y = GCV)) + geom_line(colour = "grey50", linewidth = 1) + geom_point(size = 3, colour = "#31688e") + geom_vline(xintercept = opt_nb, linetype = "dashed", colour = "#d8576b", linewidth = 1) + labs(title = "GCV Curve for FPCA Basis Functions", x = "Number of B-spline basis functions", y = "Mean GCV") + theme_bw()
-    print(p)
-  }
-  list(opt = opt_nb, gcv = gcv, range = nbasis_range)
+
+  p <- ggplot(data.frame(nbasis = nbasis_range, GCV = gcv), aes(x = nbasis, y = GCV)) +
+    geom_line(colour = "grey50", linewidth = 1) +
+    geom_point(size = 3, colour = "#31688e") +
+    geom_vline(xintercept = opt_nb, linetype = "dashed", colour = "#d8576b", linewidth = 1) +
+    labs(title = "GCV Curve for FPCA Basis Functions",
+         x = "Number of B-spline basis functions", y = "Mean GCV") +
+    theme_bw()
+
+  list(opt = opt_nb, gcv = gcv, range = nbasis_range, plot = p)
 }
 
 compute_fpca <- function(mat_lad, hmax_vec, z_breaks, n_harm = 3) {
@@ -591,7 +649,8 @@ compute_fpca <- function(mat_lad, hmax_vec, z_breaks, n_harm = 3) {
   basis  <- create.bspline.basis(c(0, 1), nbasis = opt$opt)
   fd_obj <- Data2fd(z_rel, t(mat_rel), basis)
   fpca   <- pca.fd(fd_obj, nharm = n_harm)
-  list(fpca = fpca, fd_obj = fd_obj, mat_rel = mat_rel, z_rel = z_rel, nbasis_opt = opt$opt, varprop = fpca$varprop)
+  list(fpca = fpca, fd_obj = fd_obj, mat_rel = mat_rel, z_rel = z_rel,
+       nbasis_opt = opt$opt, varprop = fpca$varprop, gcv_plot = opt$plot)
 }
 
 plot_fpc_harmonics <- function(fpca_res, mat_lad_real, z_breaks, hmax_vec) {
@@ -612,15 +671,15 @@ plot_fpc_loadings <- function(fpca_res) {
   ggplot(df_long, aes(x = loading, y = rel_z, colour = FPC)) + geom_path(linewidth = 1.1) + geom_vline(xintercept = 0, linetype = "dashed") + facet_wrap(~ FPC, nrow = 1) + scale_colour_viridis_d(option = "turbo", end = 0.85) + labs(title = "Per-height contribution of each FPC (FPCA loadings)", x = "Loading", y = "Relative height (Z/Hmax)") + theme(legend.position = "none")
 }
 
-plot_fpc_scatters <- function(fpca_res, archetype_vec = NULL) {
+plot_fpc_scatters <- function(fpca_res, cluster_vec = NULL) {
   scores <- as.data.frame(fpca_res$fpca$scores[, 1:3])
   names(scores) <- c("FPC1", "FPC2", "FPC3")
-  if (!is.null(archetype_vec)) scores$Archetype <- factor(archetype_vec)
-  
+  if (!is.null(cluster_vec)) scores$Cluster <- factor(cluster_vec)
+
   base <- function(xv, yv) {
     p <- ggplot(scores, aes(x = .data[[xv]], y = .data[[yv]]))
-    if (!is.null(archetype_vec)) {
-      p <- p + geom_point(aes(colour = Archetype), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
+    if (!is.null(cluster_vec)) {
+      p <- p + geom_point(aes(colour = Cluster), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
     } else {
       p <- p + geom_point(alpha = 0.4, colour = "#31688e")
     }
@@ -656,11 +715,13 @@ prepare_gamm_data <- function(df_daily, df_sample, fpc_scores = NULL, h_median_v
     df <- df %>% left_join(df_sample %>% dplyr::select(x, y, H_median), by = c("x", "y"))
   }
   
-  scale_cols <- c("LAI", "Hmax", "fCover", "H_median", "Tmax_macro", 
+  if ("Cluster" %in% names(df)) df$Cluster <- as.factor(df$Cluster)
+
+  scale_cols <- c("LAI", "Hmax", "fCover", "H_median", "Tmax_macro",
                   "Wind_mean", "Rad_mean", "VPD_mean", "Rain_sum")
   cols_to_scale <- intersect(scale_cols, names(df))
   for (nm in cols_to_scale) df[[paste0(nm, "_sc")]] <- as.numeric(scale(df[[nm]]))
-  
+
   if (!is.null(fpc_scores)) {
     fpc_df <- as.data.frame(fpc_scores)
     names(fpc_df) <- paste0("FPC", seq_len(ncol(fpc_df)), "_sc")
@@ -684,6 +745,10 @@ fit_reference_gamm <- function(df_gamm, shape_type = "NONE", use_macroclimate = 
   }
   
   shape_terms <- switch(shape_type,
+                        "CLUSTER" = {
+                          cat("  [GAMM] Including profile Cluster type as categorical predictor...\n")
+                          c("Cluster")   # terme paramétrique factoriel (directement interprétable)
+                        },
                         "FPC" = {
                           cat("  [GAMM] Including FPC scores as shape predictors...\n")
                           c("s(FPC1_sc)", "s(FPC2_sc)", "s(FPC3_sc)")
@@ -708,20 +773,21 @@ fit_reference_gamm <- function(df_gamm, shape_type = "NONE", use_macroclimate = 
 #' Plot marginal effects of the GAMM predictors.
 plot_gamm_marginal_effects <- function(gam_model, shape_type = "NONE", use_macroclimate = TRUE) {
   terms_to_plot <- c("LAI_sc", "Hmax_sc")
-  
-  if (shape_type == "FPC") terms_to_plot <- c(terms_to_plot, "FPC1_sc")
+
+  if (shape_type == "CLUSTER") terms_to_plot <- c(terms_to_plot, "Cluster")
+  if (shape_type == "FPC")     terms_to_plot <- c(terms_to_plot, "FPC1_sc")
   if (shape_type == "H_MEDIAN") terms_to_plot <- c(terms_to_plot, "H_median_sc")
   if (use_macroclimate) terms_to_plot <- c(terms_to_plot, "VPD_mean_sc", "Wind_mean_sc", "Rad_mean_sc")
-  
+
   plots <- lapply(terms_to_plot, function(term) {
     pred <- ggpredict(gam_model, terms = term)
     plot(pred) +
       labs(title = paste("Effect of", gsub("_sc", "", term)),
-           x = paste(gsub("_sc", "", term), "(Scaled)"),
-           y = "Predicted ΔTmax (°C)") +
+           x = if (term == "Cluster") "Profile cluster type" else paste(gsub("_sc", "", term), "(Scaled)"),
+           y = "Predicted \u0394Tmax (\u00b0C)") +
       theme_bw() + theme(plot.title = element_text(size = 10))
   })
-  
+
   wrap_plots(plots, ncol = 2) + plot_annotation(title = "GAMM Marginal Effects", subtitle = "Holding all other variables at their mean")
 }
 
@@ -835,28 +901,551 @@ make_s2_formsh_scenario <- function(df_sample, in_dir, agg_factor = 2) {
 }
 
 # ==============================================================================
+# SECTION 16b.  VERTICAL TEMPERATURE PROFILES (H2 — by cluster median)
+# ==============================================================================
+#
+# Inspection préalable (Phase 0) a révélé la structure des NetCDF MuSICA :
+#   - Tair_z      : dims [nair=15 × time=13847]
+#   - relative_height : vecteur [nair] de hauteurs relatives (0→1)
+#   - veget_height_top: hauteur absolue du couvert (série temporelle,
+#     constante en pratique → prendre veget_height_top[1])
+#   - Axe Z absolu = relative_height × veget_height_top[1]
+
+#' Extraire le profil vertical de Tmax pour un NetCDF MuSICA.
+#'
+#' @param nc_file     Chemin vers le fichier NetCDF.
+#' @param date_seq    Dates d'intérêt (filtre sur l'été).
+#' @param summary     "mean_summer" | "canicule_date" | "median_date"
+#' @return Tibble (height_m, Tmax_z) ou NULL si échec.
+extract_vertical_tmax_profile <- function(nc_file, date_seq,
+                                           summary = "mean_summer") {
+  if (is.na(nc_file) || !file.exists(nc_file)) return(NULL)
+
+  nc <- try(nc_open(nc_file), silent = TRUE)
+  if (inherits(nc, "try-error")) return(NULL)
+
+  # Axe Z absolu depuis les variables relatives au couvert
+  rel_h <- try(ncvar_get(nc, "relative_height"), silent = TRUE)
+  h_top <- try(ncvar_get(nc, "veget_height_top"), silent = TRUE)
+  raw   <- try(get_variable(nc, "Tair_z"), silent = TRUE)
+  nc_close(nc)
+
+  if (inherits(raw, "try-error") || is.null(raw)) return(NULL)
+
+  hmax_nc <- if (!inherits(h_top, "try-error")) h_top[1] else NA_real_
+
+  # Tmax journalière par niveau nair
+  df <- raw %>%
+    mutate(
+      Tair_sim = Tair_z - 273.15,
+      time     = time - hours(2),
+      date     = as.Date(time)
+    ) %>%
+    filter(date %in% date_seq) %>%
+    group_by(nair, date) %>%
+    summarise(Tmax_daily = max(Tair_sim, na.rm = TRUE), .groups = "drop")
+
+  # Résumé selon le mode demandé
+  df_out <- switch(summary,
+    "mean_summer" = df %>%
+      group_by(nair) %>%
+      summarise(Tmax_z = mean(Tmax_daily, na.rm = TRUE), .groups = "drop"),
+
+    "canicule_date" = {
+      d_max <- df %>%
+        group_by(date) %>%
+        summarise(m = max(Tmax_daily, na.rm = TRUE), .groups = "drop") %>%
+        slice_max(m, n = 1, with_ties = FALSE) %>%
+        pull(date)
+      df %>%
+        filter(date == d_max) %>%
+        dplyr::select(nair, Tmax_z = Tmax_daily)
+    },
+
+    "median_date" = {
+      d_med <- df %>%
+        group_by(date) %>%
+        summarise(m = max(Tmax_daily, na.rm = TRUE), .groups = "drop") %>%
+        arrange(m) %>%
+        slice(ceiling(n() / 2)) %>%
+        pull(date)
+      df %>%
+        filter(date == d_med) %>%
+        dplyr::select(nair, Tmax_z = Tmax_daily)
+    }
+  )
+
+  # Rattacher l'axe Z absolu
+  if (!inherits(rel_h, "try-error") && !is.na(hmax_nc)) {
+    # relative_height est indexé 1:n_layers, aligné avec nair 1:n_layers
+    heights_all <- rel_h * hmax_nc
+    df_out$height_m <- heights_all[df_out$nair]
+  } else {
+    # Fallback : reconstruction uniforme si la variable est absente
+    n_layers <- max(df_out$nair, na.rm = TRUE)
+    df_out$height_m <- seq(0, hmax_nc, length.out = n_layers)[df_out$nair]
+  }
+
+  df_out
+}
+
+#' Identifier le plot le plus proche de la médiane structurelle de chaque cluster.
+#'
+#' Distance euclidienne normalisée sur (LAI, Hmax, fCover) centrées
+#' par la médiane du cluster.
+#'
+#' @param df_sample  cLHS avec colonnes (x, y, Cluster, LAI, Hmax, fCover).
+#' @return Tibble 1 ligne × cluster : (Cluster, x, y, LAI, Hmax, fCover, plot_id).
+select_cluster_median_plots <- function(df_sample) {
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[select_cluster_median_plots] colonne 'Cluster' absente de df_sample.")
+    return(invisible(NULL))
+  }
+
+  df_sample %>%
+    filter(!is.na(Cluster)) %>%
+    group_by(Cluster) %>%
+    mutate(
+      sd_LAI    = sd(LAI,    na.rm = TRUE),
+      sd_Hmax   = sd(Hmax,   na.rm = TRUE),
+      sd_fCover = sd(fCover, na.rm = TRUE),
+      d_med = sqrt(
+        ((LAI    - median(LAI,    na.rm = TRUE)) / pmax(sd_LAI,    1e-9))^2 +
+        ((Hmax   - median(Hmax,   na.rm = TRUE)) / pmax(sd_Hmax,   1e-9))^2 +
+        ((fCover - median(fCover, na.rm = TRUE)) / pmax(sd_fCover, 1e-9))^2
+      )
+    ) %>%
+    slice_min(d_med, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(plot_id = sprintf("X%d_Y%d", round(x), round(y))) %>%
+    dplyr::select(Cluster, x, y, LAI, Hmax, fCover, plot_id)
+}
+
+#' Visualiser le profil LAD réel + ligne Hmax pour un plot donné.
+#'
+#' @param plot_row   Une ligne de tibble avec colonnes (x, y, Hmax, Cluster,
+#'                   plot_id, fCover) et des colonnes LAD_Layer_*.
+#' @param out_path   Chemin de sortie PNG.
+#' @param annotate   Texte optionnel ajouté en sous-titre à la place du défaut.
+#' @return Invisible ggplot object.
+plot_lad_profile_for_plot <- function(plot_row, out_path, annotate = NULL) {
+  lad_cols <- grep("^LAD_Layer_", names(plot_row), value = TRUE)
+  if (length(lad_cols) == 0) {
+    warning("[plot_lad_profile_for_plot] Aucune colonne LAD_Layer_ dans plot_row.")
+    return(invisible(NULL))
+  }
+
+  hmax <- as.numeric(plot_row$Hmax[1])
+  n    <- length(lad_cols)
+  z    <- seq(0, hmax, length.out = n)
+  lad  <- as.numeric(plot_row[1, lad_cols])
+
+  df_lad <- tibble(z_m = z, LAD = lad)
+
+  p <- ggplot(df_lad, aes(x = LAD, y = z_m)) +
+    geom_path(linewidth = 1.2, colour = "#31688e") +
+    geom_point(size = 2, alpha = 0.7, colour = "#31688e") +
+    geom_hline(yintercept = hmax, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.9) +
+    annotate("text",
+             x     = max(lad, na.rm = TRUE) * 0.7,
+             y     = hmax,
+             label = sprintf("Hmax = %.1f m", hmax),
+             vjust = -0.5, colour = "firebrick",
+             fontface = "bold", size = 4) +
+    labs(
+      title    = sprintf("Profil LAD \u2014 Plot %s (Cluster %s)",
+                         plot_row$plot_id[1], plot_row$Cluster[1]),
+      subtitle = if (!is.null(annotate)) annotate else
+                 sprintf("LAI = %.2f | Hmax = %.1f m | fCover = %.2f",
+                         plot_row$LAI[1], hmax, plot_row$fCover[1]),
+      x = expression("LAD" ~ (m^2 ~ m^{-3})),
+      y = "Hauteur (m)"
+    ) +
+    theme_bw(base_size = 12)
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 6, height = 7)
+  cat(sprintf("  [plot_lad_profile_for_plot] Sauvegard\u00e9 : %s\n", out_path))
+  invisible(p)
+}
+
+#' Vérifier la robustesse du pic de Tmax proche du sol en Cluster 1
+#' sur plusieurs plots (profils "canicule_date" Real vs Uniform LAD).
+#'
+#' Sélectionne n_plots parmi les plots Cluster 1 les plus proches de la
+#' médiane structurelle (aux positions 2, 5, 10 dans l'ordre croissant de
+#' distance), extrait leurs profils verticaux et produit une figure facettée.
+#'
+#' @param df_sample       Tibble cLHS (Cluster, x, y, LAI, Hmax, fCover).
+#' @param real_lad_dir    Dossier NetCDF H2_real_LAD.
+#' @param uniform_lad_dir Dossier NetCDF H2_uniform_LAD.
+#' @param date_seq        Dates d'intérêt.
+#' @param out_dir         Dossier de sortie.
+#' @param n_plots         Nombre de plots C1 à comparer (default 3).
+#' @return Invisible list(plot, data).
+verify_cluster1_peak <- function(df_sample, real_lad_dir, uniform_lad_dir,
+                                  date_seq, out_dir = "outputs/h2",
+                                  n_plots = 3) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[verify_cluster1_peak] Colonne 'Cluster' absente \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  # Sélection des plots Cluster 1, ordonnés par distance à la médiane
+  c1_all <- df_sample %>%
+    filter(as.character(Cluster) == "1") %>%
+    mutate(
+      sd_LAI    = sd(LAI,    na.rm = TRUE),
+      sd_Hmax   = sd(Hmax,   na.rm = TRUE),
+      sd_fCover = sd(fCover, na.rm = TRUE),
+      d_med     = sqrt(
+        ((LAI    - median(LAI,    na.rm = TRUE)) / pmax(sd_LAI,    1e-9))^2 +
+        ((Hmax   - median(Hmax,   na.rm = TRUE)) / pmax(sd_Hmax,   1e-9))^2 +
+        ((fCover - median(fCover, na.rm = TRUE)) / pmax(sd_fCover, 1e-9))^2
+      )
+    ) %>%
+    arrange(d_med)
+
+  if (nrow(c1_all) == 0) {
+    warning("[verify_cluster1_peak] Aucun plot Cluster 1 trouv\u00e9 \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  # Positions 2, 5, 10 (ou jusqu'à nrow si plus petit)
+  idx_sel <- c(2, 5, 10)
+  idx_sel <- idx_sel[idx_sel <= nrow(c1_all)]
+  if (length(idx_sel) == 0) idx_sel <- seq_len(min(n_plots, nrow(c1_all)))
+  c1_sel  <- c1_all[idx_sel, ] %>%
+    mutate(plot_id = sprintf("X%d_Y%d", round(x), round(y)))
+
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  c1_meta <- c1_sel %>%
+    rowwise() %>%
+    mutate(
+      nc_real    = find_nc(real_lad_dir,    x, y),
+      nc_uniform = find_nc(uniform_lad_dir, x, y)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(nc_real) & !is.na(nc_uniform))
+
+  if (nrow(c1_meta) == 0) {
+    warning("[verify_cluster1_peak] Aucun NetCDF valide pour Cluster 1 \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  df_profiles <- purrr::pmap_dfr(
+    c1_meta,
+    function(Cluster, x, y, LAI, Hmax, fCover, plot_id, nc_real, nc_uniform, ...) {
+      prof_real <- extract_vertical_tmax_profile(nc_real,    date_seq, "canicule_date")
+      prof_unif <- extract_vertical_tmax_profile(nc_uniform, date_seq, "canicule_date")
+      bind_rows(
+        if (!is.null(prof_real)) prof_real %>% mutate(scenario = "Real LAD"),
+        if (!is.null(prof_unif)) prof_unif %>% mutate(scenario = "Uniform LAD")
+      ) %>%
+        mutate(Cluster = as.character(Cluster),
+               plot_id = plot_id,
+               LAI     = LAI,
+               Hmax    = Hmax)
+    }
+  )
+
+  if (nrow(df_profiles) == 0) {
+    warning("[verify_cluster1_peak] Aucun profil extrait pour Cluster 1.")
+    return(invisible(NULL))
+  }
+
+  df_profiles <- df_profiles %>%
+    mutate(panel_label = sprintf("Plot %s\nHmax=%.1fm | LAI=%.1f",
+                                  plot_id, Hmax, LAI))
+
+  df_hmax_lines <- df_profiles %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax), .groups = "drop")
+
+  p <- ggplot(df_profiles, aes(x = Tmax_z, y = height_m, colour = scenario)) +
+    geom_path(linewidth = 1.2) +
+    geom_point(size = 2, alpha = 0.7) +
+    geom_hline(data      = df_hmax_lines,
+               aes(yintercept = Hmax),
+               linetype  = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    scale_colour_manual(
+      values = c("Real LAD" = "#31688e", "Uniform LAD" = "#d8576b")
+    ) +
+    labs(
+      title    = "V\u00e9rification pic sol \u2014 Cluster 1 (canicule_date)",
+      subtitle = sprintf("%d plots Cluster 1 ordonn\u00e9s par distance \u00e0 la m\u00e9diane",
+                         nrow(c1_meta)),
+      x      = expression(T[max] ~ "simul\u00e9e" ~ (degree*C)),
+      y      = "Hauteur (m)",
+      colour = "Sc\u00e9nario"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"))
+
+  png_path <- file.path(out_dir, "h2_verify_cluster1_peak.png")
+  csv_path <- file.path(out_dir, "h2_verify_cluster1_peak.csv")
+
+  save_plot(p, png_path, width = 14, height = 6)
+  write.csv(df_profiles, csv_path, row.names = FALSE)
+  cat(sprintf("  [verify_cluster1_peak] PNG : %s\n", png_path))
+  cat(sprintf("  [verify_cluster1_peak] CSV : %s\n", csv_path))
+
+  invisible(list(plot = p, data = df_profiles))
+}
+
+#' Produire la figure en 3 panneaux (un par cluster) : Tmax vs hauteur,
+#' Real LAD vs Uniform LAD.
+#'
+#' @param df_sample       cLHS (besoin de Cluster, LAI, Hmax, fCover, x, y).
+#' @param real_lad_dir    Dossier NetCDF du scénario H2_real_LAD.
+#' @param uniform_lad_dir Dossier NetCDF du scénario H2_uniform_LAD.
+#' @param date_seq        Dates d'intérêt (filtre été).
+#' @param out_dir         Dossier de sortie PNG/CSV.
+#' @param summary_mode    "mean_summer" | "canicule_date" | "median_date".
+#' @return Invisiblement list(plot, data, medians).
+plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
+                                         uniform_lad_dir, date_seq,
+                                         out_dir = "outputs/h2",
+                                         summary_mode = "mean_summer") {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[plot_vertical_tmax_profiles] colonne 'Cluster' absente — abandon.")
+    return(invisible(NULL))
+  }
+
+  # 1. Sélection des plots médians
+  medians <- select_cluster_median_plots(df_sample)
+  if (is.null(medians) || nrow(medians) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun plot médian sélectionné.")
+    return(invisible(NULL))
+  }
+  cat(sprintf("  [vertical profile] %d plots médians :\n", nrow(medians)))
+  print(as.data.frame(medians[, c("Cluster", "plot_id", "LAI", "Hmax", "fCover")]))
+
+  # 2. Trouver les NetCDF par pattern X{x}_Y{y}
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  profiles_meta <- medians %>%
+    rowwise() %>%
+    mutate(
+      nc_real    = find_nc(real_lad_dir,    x, y),
+      nc_uniform = find_nc(uniform_lad_dir, x, y)
+    ) %>%
+    ungroup()
+
+  missing <- profiles_meta %>%
+    filter(is.na(nc_real) | is.na(nc_uniform))
+  if (nrow(missing) > 0) {
+    warning(sprintf(
+      "[plot_vertical_tmax_profiles] NetCDF manquants pour %d plot(s) : %s",
+      nrow(missing), paste(missing$plot_id, collapse = ", ")
+    ))
+    print(missing[, c("Cluster", "plot_id", "nc_real", "nc_uniform")])
+    profiles_meta <- profiles_meta %>% filter(!is.na(nc_real) & !is.na(nc_uniform))
+  }
+  if (nrow(profiles_meta) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun NetCDF valide — abandon.")
+    return(invisible(NULL))
+  }
+
+  # 3. Extraction des profils pour chaque plot × scénario
+  df_profiles <- purrr::pmap_dfr(
+    profiles_meta,
+    function(Cluster, x, y, LAI, Hmax, fCover, plot_id, nc_real, nc_uniform, ...) {
+      prof_real <- extract_vertical_tmax_profile(nc_real,    date_seq, summary_mode)
+      prof_unif <- extract_vertical_tmax_profile(nc_uniform, date_seq, summary_mode)
+      bind_rows(
+        if (!is.null(prof_real))
+          prof_real %>% mutate(scenario = "Real LAD"),
+        if (!is.null(prof_unif))
+          prof_unif %>% mutate(scenario = "Uniform LAD")
+      ) %>%
+        mutate(Cluster = as.character(Cluster),
+               plot_id = plot_id,
+               LAI     = LAI,
+               Hmax    = Hmax)
+    }
+  )
+
+  if (nrow(df_profiles) == 0) {
+    warning("[plot_vertical_tmax_profiles] Aucun profil extrait.")
+    return(invisible(NULL))
+  }
+
+  # 4. Construction du graphique
+  df_profiles <- df_profiles %>%
+    mutate(panel_label = sprintf("Cluster %s\nHmax = %.1f m | LAI = %.1f",
+                                  Cluster, Hmax, LAI))
+
+  # B1 : ligne Hmax par panneau
+  df_hmax_lines <- df_profiles %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax), .groups = "drop")
+
+  p <- ggplot(df_profiles, aes(x = Tmax_z, y = height_m, colour = scenario)) +
+    geom_path(linewidth = 1.2) +
+    geom_point(size = 2, alpha = 0.7) +
+    geom_hline(data      = df_hmax_lines,
+               aes(yintercept = Hmax),
+               linetype  = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    scale_colour_manual(
+      values = c("Real LAD" = "#31688e", "Uniform LAD" = "#d8576b")
+    ) +
+    labs(
+      title    = "Profils verticaux de Tmax \u2014 Real LAD vs Uniform LAD",
+      subtitle = sprintf(
+        "Plot m\u00e9dian de chaque cluster  |  Mode : %s", summary_mode
+      ),
+      x      = expression(T[max] ~ "simul\u00e9e" ~ (degree*C)),
+      y      = "Hauteur (m)",
+      colour = "Sc\u00e9nario"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"))
+
+  # 5. Sauvegarde PNG + CSV (figure principale)
+  png_path <- file.path(out_dir,
+    sprintf("h2_vertical_tmax_profiles_%s.png", summary_mode))
+  csv_path <- file.path(out_dir,
+    sprintf("h2_vertical_tmax_profiles_%s.csv", summary_mode))
+
+  save_plot(p, png_path, width = 14, height = 6)
+  write.csv(df_profiles, csv_path, row.names = FALSE)
+  cat(sprintf("  [vertical profile] PNG : %s\n", png_path))
+  cat(sprintf("  [vertical profile] CSV : %s\n", csv_path))
+
+  # 6. B2 : panneau différence Real - Uniform (patchwork)
+  if (requireNamespace("patchwork", quietly = TRUE) &&
+      length(unique(df_profiles$scenario)) == 2) {
+    df_diff <- df_profiles %>%
+      tidyr::pivot_wider(
+        id_cols     = c(Cluster, nair, height_m, panel_label),
+        names_from  = scenario,
+        values_from = Tmax_z
+      ) %>%
+      dplyr::filter(!is.na(`Real LAD`) & !is.na(`Uniform LAD`)) %>%
+      dplyr::mutate(Diff = `Real LAD` - `Uniform LAD`)
+
+    if (nrow(df_diff) > 0) {
+      p_diff <- ggplot(df_diff, aes(x = Diff, y = height_m)) +
+        geom_path(linewidth = 1.0, colour = "#5ec962") +
+        geom_vline(xintercept = 0, linetype = "dotted",
+                   colour = "grey50", linewidth = 0.7) +
+        geom_hline(data      = df_hmax_lines,
+                   aes(yintercept = Hmax),
+                   linetype  = "dashed", colour = "firebrick",
+                   linewidth = 0.8, inherit.aes = FALSE) +
+        facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+        labs(
+          x = expression(Delta * T[max] ~ "(Real \u2212 Uniform)" ~ (degree*C)),
+          y = "Hauteur (m)"
+        ) +
+        theme_bw(base_size = 11) +
+        theme(strip.text = element_blank())
+
+      p_combined <- p / p_diff + patchwork::plot_layout(heights = c(2, 1))
+      diff_path  <- file.path(out_dir,
+        sprintf("h2_vertical_tmax_profiles_%s_with_diff.png", summary_mode))
+      save_plot(p_combined, diff_path, width = 14, height = 8)
+      cat(sprintf("  [vertical profile] PNG avec diff : %s\n", diff_path))
+    }
+  }
+
+  invisible(list(plot = p, data = df_profiles, medians = medians))
+}
+
+# ==============================================================================
 # SECTION 16.  main() — orchestrator
 # ==============================================================================
 
 main <- function() {
-  
+
+  cat("[0/7] Setup output directories...\n")
+  setup_outputs_dirs()
+
   cat("[1/7] Loading LiDAR rasters...\n")
   rasters <- load_lidar_rasters(CFG$in_dir, CFG$agg_factor)
-  
+
   cat("[2/7] Building forest dataframe...\n")
   fd      <- build_forest_dataframe(rasters$stack)
-  df_forest <- label_archetypes(fd$df, k = CFG$k_clusters)
-  
+  cl_res  <- label_clusters(fd$df, k = CFG$k_clusters)
+  df_forest <- cl_res$df
+  if (!is.null(cl_res$elbow_plot)) {
+    save_plot(cl_res$elbow_plot, "outputs/clusters/kmeans_elbow.png", width = 8, height = 5)
+    print(cl_res$elbow_plot)
+  }
+
   df_macro <- extract_macro_daily(CFG$forcing_file, CFG$date_seq)
-  
+
+  # ---- 2b. FPCA sur la forêt ENTIÈRE (avant échantillonnage) -----------------
+  cat("[2b] FPCA sur la forêt entière (avant cLHS)...\n")
+  fpca_res <- compute_fpca(fd$mat_lad, fd$df$Hmax, fd$z_breaks)
+  fpc_var  <- fpca_res$varprop
+  cat(sprintf("    FPC variance (forêt entière) : %s\n",
+              paste(round(100 * fpc_var, 1), collapse = " / ")))
+
+  writeLines(sprintf("FPC1: %.1f%%\nFPC2: %.1f%%\nFPC3: %.1f%%",
+                     100 * fpc_var[1], 100 * fpc_var[2], 100 * fpc_var[3]),
+             "outputs/fpca/fpca_variance.txt")
+
+  save_plot(fpca_res$gcv_plot, "outputs/fpca/fpca_gcv_curve.png", width = 8, height = 5)
+  print(fpca_res$gcv_plot)
+
+  p_fpca_harm <- plot_fpc_harmonics(fpca_res, fd$mat_lad, fd$z_breaks, fd$df$Hmax)
+  save_plot(p_fpca_harm, "outputs/fpca/fpca_harmonics.png", width = 12, height = 6)
+  print(p_fpca_harm)
+
+  p_fpca_load <- plot_fpc_loadings(fpca_res)
+  save_plot(p_fpca_load, "outputs/fpca/fpca_loadings.png", width = 10, height = 5)
+  print(p_fpca_load)
+
+  p_fpca_scat <- plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster)
+  save_plot(p_fpca_scat, "outputs/fpca/fpca_scatters.png", width = 12, height = 5)
+  print(p_fpca_scat)
+
+  p_clust_prof <- plot_cluster_mean_profiles(df_forest, fd$mat_lad, fd$z_breaks)
+  save_plot(p_clust_prof, "outputs/clusters/cluster_mean_profiles.png", width = 12, height = 6)
+  print(p_clust_prof)
+
+  # ---- 3. cLHS sampling -------------------------------------------------------
   if (FLAGS$RUN_CLHS) {
     cat("[3/7] cLHS sampling...\n")
-    df_sample <- sample_clhs_per_archetype(df_forest, CFG$n_per_archetype)
+    df_sample <- sample_clhs_per_cluster(df_forest, CFG$n_per_cluster)
     saveRDS(df_sample, file.path(CFG$out_dir, "clhs_sample.rds"))
   } else {
     df_sample <- readRDS(file.path(CFG$out_dir, "clhs_sample.rds"))
+    # Compatibilité : RDS anciens contiennent "Archetype" au lieu de "Cluster"
+    if ("Archetype" %in% names(df_sample) && !"Cluster" %in% names(df_sample)) {
+      df_sample <- df_sample %>% rename(Cluster = Archetype)
+    }
   }
   cat(sprintf("    sample size: %d plots\n", nrow(df_sample)))
+
+  # Projection des scores FPCA (forêt entière) sur le sous-ensemble cLHS.
+  # Les scores sont alignés ligne-à-ligne avec fd$df / df_forest ; on retrouve
+  # les indices par correspondance (x, y).
+  idx_sample       <- match(paste(df_sample$x, df_sample$y),
+                            paste(df_forest$x, df_forest$y))
+  fpc_scores_sample <- fpca_res$fpca$scores[idx_sample, 1:3]
   
   ref_sc <- scenario_reference(df_sample)
   
@@ -868,10 +1457,75 @@ main <- function() {
     df_h2    <- extract_all_scenarios(h2_paths, df_macro, CFG$date_seq)
     df_h2_w  <- summarise_h2(df_h2)
     
-    print(plot_h2_distributions(df_h2))
-    print(plot_h2_paired(df_h2_w))
+    p_h2_dist <- plot_h2_distributions(df_h2)
+    save_plot(p_h2_dist, "outputs/h2/h2_distributions.png")
+    print(p_h2_dist)
+
+    p_h2_pair <- plot_h2_paired(df_h2_w)
+    save_plot(p_h2_pair, "outputs/h2/h2_paired_real_vs_uniform.png")
+    print(p_h2_pair)
+
     cat(sprintf("    mean per-plot diff (real - uniform): %.3f °C\n", mean(df_h2_w$diff, na.rm = TRUE)))
-    analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
+    p_h2_hw <- analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
+    save_plot(p_h2_hw, "outputs/h2/h2_heatwave_histogram.png")
+
+    if (FLAGS$RUN_VERTICAL_PROFILES) {
+      cat("[vertical] Profils verticaux Tmax par cluster médian...\n")
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "mean_summer"
+      )
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "canicule_date"
+      )
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "median_date"
+      )
+
+      # ---- Profils LAD des plots médians — tous clusters ----------------------
+      cat("[vertical] Profils LAD par cluster m\u00e9dian (tous clusters)...\n")
+      medians_all <- select_cluster_median_plots(df_sample)
+      if (!is.null(medians_all) && nrow(medians_all) > 0) {
+        for (cl in unique(medians_all$Cluster)) {
+          cl_median <- medians_all %>% filter(Cluster == cl)
+          if (nrow(cl_median) == 1) {
+            cl_full <- df_sample %>%
+              filter(abs(x - cl_median$x) < 1 & abs(y - cl_median$y) < 1) %>%
+              slice(1)
+            if (nrow(cl_full) == 1) {
+              plot_lad_profile_for_plot(
+                cl_full,
+                sprintf("outputs/h2/c%s_median_lad_profile.png", cl)
+              )
+            }
+          }
+        }
+      }
+
+      # ---- Diagnostic pic proche du sol — Cluster 1 ---------------------------
+      cat("[vertical] Diagnostic pic Cluster 1 (verify_cluster1_peak)...\n")
+      verify_cluster1_peak(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2"
+      )
+    }
   }
   
   # ---- 5. H1 — forward / LOO / factorial -----------------------------------
@@ -899,56 +1553,54 @@ main <- function() {
   df_all_scenarios <- extract_all_scenarios(scenario_paths, df_macro, CFG$date_seq)
   df_scores        <- score_scenarios_vs_reference(df_all_scenarios, ref_sc$name)
   print(df_scores)
-  print(plot_scenario_hierarchy(df_scores, ref_sc$name))
-  
+  write.csv(df_scores, "outputs/h1/h1_scores.csv", row.names = FALSE)
+
+  p_h1_hier <- plot_scenario_hierarchy(df_scores, ref_sc$name)
+  save_plot(p_h1_hier, "outputs/h1/h1_hierarchy.png")
+  print(p_h1_hier)
+
   if (FLAGS$RUN_H1_FORWARD) {
     forward_order <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
-    print(plot_forward_curve(df_scores, forward_order))
+    p_h1_fwd <- plot_forward_curve(df_scores, forward_order)
+    save_plot(p_h1_fwd, "outputs/h1/h1_forward_curve.png")
+    print(p_h1_fwd)
   }
   
-  # ---- 6. FPCA --------------------------------------------------------------
-  fpca_res <- NULL
-  if (FLAGS$RUN_FPCA || FLAGS$GAMM_SHAPE_VAR == "FPC") {
-    cat("[6/7] FPCA on cLHS sample...\n")
-    mat_sample <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
-    mat_sample[is.na(mat_sample)] <- 0
-    z_breaks <- as.numeric(gsub("LAD_Layer_", "", colnames(mat_sample)))
-    fpca_res <- compute_fpca(mat_sample, df_sample$Hmax, z_breaks)
-    
-    cat(sprintf("    FPC variance: %s\n", paste(round(100 * fpca_res$varprop, 1), collapse = " / ")))
-    print(plot_fpc_harmonics(fpca_res, mat_sample, z_breaks, df_sample$Hmax))
-    print(plot_fpc_loadings(fpca_res))
-    print(plot_fpc_scatters(fpca_res, archetype_vec = df_sample$Archetype))
-  }
-  
-  # ---- 7. GAMM emulator -----------------------------------------------------
+  # ---- 6. GAMM emulator -----------------------------------------------------
   if (FLAGS$RUN_GAMM_EMULATOR) {
-    cat("[7/7] GAMM emulator on reference scenario...\n")
+    cat("[6/7] GAMM emulator on reference scenario...\n")
     df_ref_daily <- df_all_scenarios %>% filter(scenario == ref_sc$name) %>% join_with_sample(df_sample)
-    
-    # Resolve shape predictors
-    fpc_scores <- NULL
-    h_median_vec <- NULL
-    
-    if (FLAGS$GAMM_SHAPE_VAR == "FPC") {
-      fpc_scores <- fpca_res$fpca$scores[, 1:3]
-    } else if (FLAGS$GAMM_SHAPE_VAR == "H_MEDIAN") {
-      mat_sample <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
-      mat_sample[is.na(mat_sample)] <- 0
-      z_breaks   <- as.numeric(gsub("LAD_Layer_", "", colnames(mat_sample)))
-      h_median_vec <- compute_h_median(mat_sample, z_breaks)
-    }
-    
-    df_gamm <- prepare_gamm_data(df_ref_daily, df_sample, fpc_scores = fpc_scores, h_median_vec = h_median_vec)
-    
-    gam_ref <- fit_reference_gamm(df_gamm, shape_type = FLAGS$GAMM_SHAPE_VAR, use_macroclimate = FLAGS$USE_MACROCLIMATE_GAMM)
+
+    # Résolution des prédicteurs de forme (scores FPCA déjà calculés sur la
+    # forêt entière et projetés sur l'échantillon à l'étape 2b/3).
+    fpc_scores   <- if (FLAGS$GAMM_SHAPE_VAR == "FPC") fpc_scores_sample else NULL
+    h_median_vec <- if (FLAGS$GAMM_SHAPE_VAR == "H_MEDIAN") {
+      mat_s  <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
+      mat_s[is.na(mat_s)] <- 0
+      compute_h_median(mat_s, as.numeric(gsub("LAD_Layer_", "", colnames(mat_s))))
+    } else NULL
+    # CLUSTER : déjà présent dans df_gamm via join_with_sample → rien à ajouter.
+
+    df_gamm <- prepare_gamm_data(df_ref_daily, df_sample,
+                                  fpc_scores = fpc_scores, h_median_vec = h_median_vec)
+
+    gam_ref <- fit_reference_gamm(df_gamm,
+                                   shape_type      = FLAGS$GAMM_SHAPE_VAR,
+                                   use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
+    capture.output(summary(gam_ref), file = "outputs/gamm/gamm_summary.txt")
     print(summary(gam_ref))
-    
-    p_effects <- plot_gamm_marginal_effects(gam_ref, shape_type = FLAGS$GAMM_SHAPE_VAR, use_macroclimate = FLAGS$USE_MACROCLIMATE_GAMM)
-    print(p_effects)
-    
+
+    p_gamm_eff <- plot_gamm_marginal_effects(gam_ref,
+                                              shape_type      = FLAGS$GAMM_SHAPE_VAR,
+                                              use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
+    save_plot(p_gamm_eff, "outputs/gamm/gamm_marginal_effects.png", width = 12, height = 8)
+    print(p_gamm_eff)
+
+    png("outputs/gamm/gamm_residuals_diagnostic.png", width = 1200, height = 900, res = 120)
     diag_res <- diagnose_residuals(gam_ref, df_gamm)
+    dev.off()
     print(diag_res)
+    write.csv(diag_res, "outputs/gamm/gamm_residuals_stats.csv", row.names = FALSE)
   }
   
   # ---- OPTIONAL: HOBO validation --------------------------------------------
@@ -962,15 +1614,20 @@ main <- function() {
     
     hobo_res <- validate_scenarios_at_hobos(df_hobo_inputs, df_hobo_daily, hobo_scs, parent_dir = CFG$out_hobo, df_macro = df_macro, date_seq = CFG$date_seq)
     print(hobo_res$metrics)
-    print(plot_hobo_validation(hobo_res$metrics))
-    
-    fw_names <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
+    write.csv(hobo_res$metrics, "outputs/hobo/hobo_metrics.csv", row.names = FALSE)
+
+    p_hobo_val <- plot_hobo_validation(hobo_res$metrics)
+    save_plot(p_hobo_val, "outputs/hobo/hobo_validation_rmse.png")
+    print(p_hobo_val)
+
+    fw_names  <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
     rep_hobos <- pick_representative_hobos(df_hobo_daily)
-    
+
     df_real <- hobo_res$daily %>% filter(scenario == fw_names["Full_real"]) %>% mutate(Tmax_micro = Delta_sim + Tmax_macro)
     df_unif <- hobo_res$daily %>% filter(scenario == fw_names["LAI_Hmax_fCover"]) %>% mutate(Tmax_micro = Delta_sim + Tmax_macro)
-    
+
     p_ts <- plot_timeseries_faceted(rep_hobos, df_hobo_daily, df_real, df_unif, df_macro)
+    save_plot(p_ts, "outputs/hobo/hobo_timeseries_representatives.png", width = 12, height = 10)
     print(p_ts)
   }
   
@@ -1003,8 +1660,9 @@ main <- function() {
            x = expression(Delta * T[max] ~ (degree*C)), y = "Density", fill = "Input Source", colour = "Input Source") +
       theme(legend.position = "bottom")
     
+    save_plot(p_s2_density, "outputs/s2_annex/s2_density.png")
     print(p_s2_density)
-    
+
     axis_lims_s2 <- c(min(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE), max(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE))
     
     p_s2_paired <- ggplot(df_s2_matched, aes(x = Delta_ref, y = Delta_Tmax)) +
@@ -1017,9 +1675,13 @@ main <- function() {
            x = expression("LiDAR (Full 3D Real)" ~ Delta * T[max] ~ (degree*C)), y = expression("Sentinel-2 + FORMS-H" ~ Delta * T[max] ~ (degree*C))) +
       theme_bw(base_size = 14) + theme(legend.position = "right", plot.title = element_text(face = "bold"))
     
+    save_plot(p_s2_paired, "outputs/s2_annex/s2_paired.png")
     print(p_s2_paired)
+
+    writeLines(sprintf("R2: %.4f\nRMSE: %.4f deg C\nBias: %.4f deg C", s2_r2, s2_rmse, s2_bias),
+               "outputs/s2_annex/s2_metrics.txt")
   }
-  
+
   cat("\n[done]\n")
   invisible(NULL)
 }
