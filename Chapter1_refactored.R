@@ -117,7 +117,8 @@ FLAGS <- list(
   USE_MACROCLIMATE_GAMM = TRUE,   # Include physical meteorology in GAMM
   GAMM_SHAPE_VAR        = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
 
-  RUN_VERTICAL_PROFILES = TRUE,   # profils verticaux Tmax par cluster médian (H2)
+  RUN_VERTICAL_PROFILES     = TRUE,   # profils verticaux Tmax par cluster médian (H2)
+  RUN_H2_STRUCTURE_ANALYSIS = TRUE,   # post-processing léger (< 30 s, pas de simulation)
   RUN_HOBO_VALIDATION   = TRUE,   # MuSICA at HOBO locations
   RUN_S2_ANNEX          = FALSE,  # Sentinel-2 annex (H3) — reporter à plus tard (cf. retours encadrants)
   RUN_H1_FACTORIAL      = FALSE   # heavy, off by default
@@ -581,6 +582,205 @@ validate_hobo_paired <- function(hobo_res) {
   df %>% inner_join(common_keys %>% select(id_plot, date), by = c("id_plot", "date")) %>% group_by(scenario) %>%
     summarise(n = n(), r2 = cor(Delta_obs, Delta_sim, use = "complete.obs")^2, rmse = sqrt(mean((Delta_obs - Delta_sim)^2, na.rm = TRUE)),
               mae  = mean(abs(Delta_obs - Delta_sim), na.rm = TRUE), bias = mean(Delta_sim - Delta_obs, na.rm = TRUE), .groups = "drop") %>% arrange(rmse)
+}
+
+# ==============================================================================
+# SECTION 9c.  H2 — Analyse structurée de la diff (real – uniform)
+# ==============================================================================
+
+#' Analyse la structure de la diff (Real - Uniform) par archétype et métriques
+#' structurelles.
+#'
+#' Produit 4 livrables :
+#'   1. Boxplot horizontal diff par archétype (PNG)
+#'   2. Table heatwave × archétype (CSV + console)
+#'   3. Scatter corrélation diff vs métriques structurelles (PNG + CSV)
+#'   4. Histogramme amplitude temporelle de l'effet LAD par plot (PNG)
+#'
+#' @param df_h2_w      Dataframe wide H2 (x, y, date, Real, Uniform, diff).
+#' @param df_sample    Dataframe cLHS (x, y, Archetype, LAI, Hmax, fCover, ...).
+#' @param df_macro     Dataframe macroclimat journalier (date, Tmax_macro, ...).
+#' @param h_median_vec Vecteur numérique H_median par plot (même ordre que
+#'                     df_sample) ; NULL si non disponible.
+#' @param fpc_scores   Matrice nx3 des scores FPC1/2/3 ; NULL si non disponible.
+#' @param out_dir      Répertoire de sortie pour PNG et CSV.
+#' @return Invisiblement : liste $per_plot, $cor_tbl, $tbl_archetype.
+analyse_h2_structure <- function(df_h2_w, df_sample, df_macro,
+                                  h_median_vec = NULL, fpc_scores = NULL,
+                                  out_dir = "outputs/audit") {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # --- Métadonnées plot -------------------------------------------------------
+  df_meta <- df_sample %>%
+    dplyr::select(x, y, Archetype, LAI, Hmax, fCover) %>%
+    mutate(Archetype = as.factor(Archetype))
+
+  # --- Agrégation per-plot (moyenne + quantiles sur les dates d'été) ----------
+  df_per_plot <- df_h2_w %>%
+    group_by(x, y) %>%
+    summarise(
+      diff_mean = mean(diff, na.rm = TRUE),
+      diff_q05  = quantile(diff, 0.05, na.rm = TRUE),
+      diff_q95  = quantile(diff, 0.95, na.rm = TRUE),
+      n_dates   = n(),
+      .groups   = "drop"
+    ) %>%
+    inner_join(df_meta, by = c("x", "y")) %>%
+    mutate(amplitude = diff_q95 - diff_q05)
+
+  # ── Livrable 1 — Boxplot diff par archétype ─────────────────────────────────
+  arch_stats <- df_per_plot %>%
+    group_by(Archetype) %>%
+    summarise(n = n(), median_diff = median(diff_mean, na.rm = TRUE), .groups = "drop")
+
+  subtitle_1 <- paste(
+    sprintf("Arch.%s : n=%d, méd.=%+.3f°C",
+            arch_stats$Archetype, arch_stats$n, arch_stats$median_diff),
+    collapse = " | "
+  )
+
+  p1 <- ggplot(df_per_plot,
+               aes(x = diff_mean, y = Archetype, fill = Archetype, colour = Archetype)) +
+    geom_boxplot(alpha = 0.4, outlier.shape = NA) +
+    geom_jitter(height = 0.2, alpha = 0.3, size = 1.5) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = "grey30") +
+    scale_fill_viridis_d(option = "turbo") +
+    scale_colour_viridis_d(option = "turbo") +
+    labs(
+      title    = "H2 \u2014 Structure de l\u2019effet LAD par arch\u00e9type (per-plot mean)",
+      subtitle = subtitle_1,
+      x        = "diff Real \u2013 Uniform \u0394Tmax (\u00b0C)",
+      y        = "Arch\u00e9type"
+    ) +
+    theme(legend.position = "none")
+
+  print(p1)
+  ggsave(file.path(out_dir, "h2_boxplot_archetype.png"), p1,
+         width = 10, height = 6, dpi = 150)
+
+  # ── Livrable 2 — Table heatwave × archétype ─────────────────────────────────
+  df_dates <- df_h2_w %>%
+    left_join(df_macro %>% dplyr::select(date, Tmax_macro), by = "date") %>%
+    mutate(period = ifelse(Tmax_macro >= 30, "heatwave", "normal")) %>%
+    inner_join(df_meta %>% dplyr::select(x, y, Archetype), by = c("x", "y"))
+
+  tbl2 <- df_dates %>%
+    group_by(Archetype, period) %>%
+    summarise(
+      n           = n(),
+      median_diff = median(diff, na.rm = TRUE),
+      mean_diff   = mean(diff, na.rm = TRUE),
+      sd_diff     = sd(diff, na.rm = TRUE),
+      q05         = quantile(diff, 0.05, na.rm = TRUE),
+      q95         = quantile(diff, 0.95, na.rm = TRUE),
+      .groups     = "drop"
+    ) %>%
+    arrange(Archetype, period)
+
+  write.csv(tbl2, file.path(out_dir, "h2_structure_by_archetype.csv"), row.names = FALSE)
+  cat("\n\u2500\u2500 H2 Structure : diff par arch\u00e9type \u00d7 p\u00e9riode \u2500\u2500\n")
+  for (arch in levels(tbl2$Archetype)) {
+    sub <- tbl2 %>% filter(Archetype == arch)
+    cat(sprintf("  Arch\u00e9type %s:\n", arch))
+    for (i in seq_len(nrow(sub))) {
+      cat(sprintf(
+        "    %-10s  n=%5d  m\u00e9d=%+.3f\u00b0C  moy=%+.3f\u00b0C  sd=%.3f\u00b0C  [q05=%+.3f ; q95=%+.3f]\n",
+        sub$period[i], sub$n[i], sub$median_diff[i],
+        sub$mean_diff[i], sub$sd_diff[i], sub$q05[i], sub$q95[i]
+      ))
+    }
+  }
+  cat(sprintf("  \u2192 CSV : %s/h2_structure_by_archetype.csv\n", out_dir))
+
+  # ── Livrable 3 — Corrélation diff ↔ métriques structurelles ─────────────────
+  df_corr <- df_per_plot %>% dplyr::select(x, y, diff_mean, LAI, Hmax, fCover)
+
+  if (!is.null(h_median_vec) && length(h_median_vec) == nrow(df_sample)) {
+    df_hmed <- df_sample %>%
+      dplyr::select(x, y) %>%
+      mutate(H_median = h_median_vec)
+    df_corr <- df_corr %>% left_join(df_hmed, by = c("x", "y"))
+  }
+  if (!is.null(fpc_scores) && nrow(fpc_scores) == nrow(df_sample)) {
+    df_fpc <- df_sample %>%
+      dplyr::select(x, y) %>%
+      mutate(FPC1 = fpc_scores[, 1],
+             FPC2 = fpc_scores[, 2],
+             FPC3 = fpc_scores[, 3])
+    df_corr <- df_corr %>% left_join(df_fpc, by = c("x", "y"))
+  }
+
+  metric_cols <- setdiff(names(df_corr), c("x", "y", "diff_mean"))
+
+  cor_rows <- lapply(metric_cols, function(m) {
+    x_v <- df_corr[[m]]
+    y_v <- df_corr$diff_mean
+    ok  <- complete.cases(x_v, y_v)
+    if (sum(ok) < 5) return(NULL)
+    data.frame(
+      metric   = m,
+      pearson  = cor(x_v[ok], y_v[ok], method = "pearson"),
+      spearman = cor(x_v[ok], y_v[ok], method = "spearman"),
+      n        = sum(ok)
+    )
+  })
+  df_cor_tbl <- bind_rows(cor_rows)
+  write.csv(df_cor_tbl, file.path(out_dir, "h2_diff_correlations.csv"), row.names = FALSE)
+
+  annot_df <- df_cor_tbl %>% mutate(label = sprintf("r = %.2f", pearson))
+
+  df_long <- df_corr %>%
+    pivot_longer(cols = all_of(metric_cols), names_to = "metric", values_to = "metric_val") %>%
+    left_join(annot_df %>% dplyr::select(metric, label), by = "metric")
+
+  p3 <- ggplot(df_long, aes(x = metric_val, y = diff_mean)) +
+    geom_point(alpha = 0.4, size = 1.5, colour = "#31688e") +
+    geom_smooth(method = "lm", se = TRUE, colour = "#d8576b",
+                fill = "#d8576b", alpha = 0.15) +
+    geom_text(
+      data = df_long %>% group_by(metric, label) %>% slice(1),
+      aes(x = -Inf, y = Inf, label = label),
+      hjust = -0.1, vjust = 1.3, fontface = "bold", size = 3.5
+    ) +
+    facet_wrap(~ metric, scales = "free_x") +
+    labs(
+      title = "H2 \u2014 Diff LAD (real-uniform) vs m\u00e9triques structurelles par plot",
+      x     = "Valeur de la m\u00e9trique",
+      y     = "diff mean \u0394Tmax (\u00b0C)"
+    )
+
+  print(p3)
+  ggsave(file.path(out_dir, "h2_scatter_metrics.png"), p3,
+         width = 12, height = 8, dpi = 150)
+  cat(sprintf("  \u2192 CSV corr\u00e9lations : %s/h2_diff_correlations.csv\n", out_dir))
+
+  # ── Livrable 4 — Distribution amplitude temporelle ──────────────────────────
+  pct_gt1 <- 100 * mean(df_per_plot$amplitude > 1, na.rm = TRUE)
+  med_amp  <- median(df_per_plot$amplitude, na.rm = TRUE)
+
+  p4 <- ggplot(df_per_plot, aes(x = amplitude, fill = Archetype)) +
+    geom_histogram(alpha = 0.5, position = "identity", bins = 40) +
+    geom_vline(xintercept = med_amp, linetype = "dashed",
+               colour = "black", linewidth = 1) +
+    scale_fill_viridis_d(option = "turbo") +
+    annotate("text", x = Inf, y = Inf,
+             label = sprintf("%.1f%%\nplots amplitude > 1\u00b0C", pct_gt1),
+             hjust = 1.1, vjust = 1.3, fontface = "bold", size = 4) +
+    labs(
+      title    = "H2 \u2014 Amplitude temporelle de l\u2019effet LAD par plot (q95 \u2212 q05)",
+      subtitle = sprintf("M\u00e9diane globale = %.2f\u00b0C | %.1f%% plots avec amplitude > 1\u00b0C",
+                         med_amp, pct_gt1),
+      x        = "Amplitude de l\u2019effet LAD (q95 \u2013 q05) (\u00b0C)",
+      y        = "Nombre de plots"
+    )
+
+  print(p4)
+  ggsave(file.path(out_dir, "h2_amplitude_histogram.png"), p4,
+         width = 10, height = 6, dpi = 150)
+
+  cat(sprintf("\n[H2 structure] 5 livrables produits dans %s/\n", out_dir))
+  invisible(list(per_plot = df_per_plot, cor_tbl = df_cor_tbl,
+                 tbl_archetype = tbl2))
 }
 
 # ==============================================================================
@@ -1523,12 +1723,26 @@ main <- function() {
     save_plot(p_h2_pair, "outputs/h2/h2_paired_real_vs_uniform.png")
     print(p_h2_pair)
 
-    cat(sprintf("    mean per-plot diff (real - uniform): %.3f °C\n", mean(df_h2_w$diff, na.rm = TRUE)))
+    cat(sprintf("    mean per-plot diff (real - uniform): %.3f \u00b0C\n", mean(df_h2_w$diff, na.rm = TRUE)))
     p_h2_hw <- analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
     save_plot(p_h2_hw, "outputs/h2/h2_heatwave_histogram.png")
 
+    if (FLAGS$RUN_H2_STRUCTURE_ANALYSIS) {
+      cat("[audit] Analyse structure de la diff H2...\n")
+      fpc_sc_h2 <- if (exists("fpca_res") && !is.null(fpca_res))
+                     fpca_res$fpca$scores[, 1:3] else NULL
+      hmed_h2   <- if (exists("h_median_vec") && !is.null(h_median_vec))
+                     h_median_vec else NULL
+      analyse_h2_structure(
+        df_h2_w, df_sample, df_macro,
+        h_median_vec = hmed_h2,
+        fpc_scores   = fpc_sc_h2,
+        out_dir      = "outputs/audit"
+      )
+    }
+
     if (FLAGS$RUN_VERTICAL_PROFILES) {
-      cat("[vertical] Profils verticaux Tmax par cluster médian...\n")
+      cat("[vertical] Profils verticaux Tmax par cluster m\u00e9dian...\n")
       plot_vertical_tmax_profiles(
         df_sample,
         real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
