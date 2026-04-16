@@ -1021,6 +1021,189 @@ select_cluster_median_plots <- function(df_sample) {
     dplyr::select(Cluster, x, y, LAI, Hmax, fCover, plot_id)
 }
 
+#' Visualiser le profil LAD réel + ligne Hmax pour un plot donné.
+#'
+#' @param plot_row   Une ligne de tibble avec colonnes (x, y, Hmax, Cluster,
+#'                   plot_id, fCover) et des colonnes LAD_Layer_*.
+#' @param out_path   Chemin de sortie PNG.
+#' @param annotate   Texte optionnel ajouté en sous-titre à la place du défaut.
+#' @return Invisible ggplot object.
+plot_lad_profile_for_plot <- function(plot_row, out_path, annotate = NULL) {
+  lad_cols <- grep("^LAD_Layer_", names(plot_row), value = TRUE)
+  if (length(lad_cols) == 0) {
+    warning("[plot_lad_profile_for_plot] Aucune colonne LAD_Layer_ dans plot_row.")
+    return(invisible(NULL))
+  }
+
+  hmax <- as.numeric(plot_row$Hmax[1])
+  n    <- length(lad_cols)
+  z    <- seq(0, hmax, length.out = n)
+  lad  <- as.numeric(plot_row[1, lad_cols])
+
+  df_lad <- tibble(z_m = z, LAD = lad)
+
+  p <- ggplot(df_lad, aes(x = LAD, y = z_m)) +
+    geom_path(linewidth = 1.2, colour = "#31688e") +
+    geom_point(size = 2, alpha = 0.7, colour = "#31688e") +
+    geom_hline(yintercept = hmax, linetype = "dashed",
+               colour = "firebrick", linewidth = 0.9) +
+    annotate("text",
+             x     = max(lad, na.rm = TRUE) * 0.7,
+             y     = hmax,
+             label = sprintf("Hmax = %.1f m", hmax),
+             vjust = -0.5, colour = "firebrick",
+             fontface = "bold", size = 4) +
+    labs(
+      title    = sprintf("Profil LAD \u2014 Plot %s (Cluster %s)",
+                         plot_row$plot_id[1], plot_row$Cluster[1]),
+      subtitle = if (!is.null(annotate)) annotate else
+                 sprintf("LAI = %.2f | Hmax = %.1f m | fCover = %.2f",
+                         plot_row$LAI[1], hmax, plot_row$fCover[1]),
+      x = expression("LAD" ~ (m^2 ~ m^{-3})),
+      y = "Hauteur (m)"
+    ) +
+    theme_bw(base_size = 12)
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 6, height = 7)
+  cat(sprintf("  [plot_lad_profile_for_plot] Sauvegard\u00e9 : %s\n", out_path))
+  invisible(p)
+}
+
+#' Vérifier la robustesse du pic de Tmax proche du sol en Cluster 1
+#' sur plusieurs plots (profils "canicule_date" Real vs Uniform LAD).
+#'
+#' Sélectionne n_plots parmi les plots Cluster 1 les plus proches de la
+#' médiane structurelle (aux positions 2, 5, 10 dans l'ordre croissant de
+#' distance), extrait leurs profils verticaux et produit une figure facettée.
+#'
+#' @param df_sample       Tibble cLHS (Cluster, x, y, LAI, Hmax, fCover).
+#' @param real_lad_dir    Dossier NetCDF H2_real_LAD.
+#' @param uniform_lad_dir Dossier NetCDF H2_uniform_LAD.
+#' @param date_seq        Dates d'intérêt.
+#' @param out_dir         Dossier de sortie.
+#' @param n_plots         Nombre de plots C1 à comparer (default 3).
+#' @return Invisible list(plot, data).
+verify_cluster1_peak <- function(df_sample, real_lad_dir, uniform_lad_dir,
+                                  date_seq, out_dir = "outputs/h2",
+                                  n_plots = 3) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[verify_cluster1_peak] Colonne 'Cluster' absente \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  # Sélection des plots Cluster 1, ordonnés par distance à la médiane
+  c1_all <- df_sample %>%
+    filter(as.character(Cluster) == "1") %>%
+    mutate(
+      sd_LAI    = sd(LAI,    na.rm = TRUE),
+      sd_Hmax   = sd(Hmax,   na.rm = TRUE),
+      sd_fCover = sd(fCover, na.rm = TRUE),
+      d_med     = sqrt(
+        ((LAI    - median(LAI,    na.rm = TRUE)) / pmax(sd_LAI,    1e-9))^2 +
+        ((Hmax   - median(Hmax,   na.rm = TRUE)) / pmax(sd_Hmax,   1e-9))^2 +
+        ((fCover - median(fCover, na.rm = TRUE)) / pmax(sd_fCover, 1e-9))^2
+      )
+    ) %>%
+    arrange(d_med)
+
+  if (nrow(c1_all) == 0) {
+    warning("[verify_cluster1_peak] Aucun plot Cluster 1 trouv\u00e9 \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  # Positions 2, 5, 10 (ou jusqu'à nrow si plus petit)
+  idx_sel <- c(2, 5, 10)
+  idx_sel <- idx_sel[idx_sel <= nrow(c1_all)]
+  if (length(idx_sel) == 0) idx_sel <- seq_len(min(n_plots, nrow(c1_all)))
+  c1_sel  <- c1_all[idx_sel, ] %>%
+    mutate(plot_id = sprintf("X%d_Y%d", round(x), round(y)))
+
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  c1_meta <- c1_sel %>%
+    rowwise() %>%
+    mutate(
+      nc_real    = find_nc(real_lad_dir,    x, y),
+      nc_uniform = find_nc(uniform_lad_dir, x, y)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(nc_real) & !is.na(nc_uniform))
+
+  if (nrow(c1_meta) == 0) {
+    warning("[verify_cluster1_peak] Aucun NetCDF valide pour Cluster 1 \u2014 abandon.")
+    return(invisible(NULL))
+  }
+
+  df_profiles <- purrr::pmap_dfr(
+    c1_meta,
+    function(Cluster, x, y, LAI, Hmax, fCover, plot_id, nc_real, nc_uniform, ...) {
+      prof_real <- extract_vertical_tmax_profile(nc_real,    date_seq, "canicule_date")
+      prof_unif <- extract_vertical_tmax_profile(nc_uniform, date_seq, "canicule_date")
+      bind_rows(
+        if (!is.null(prof_real)) prof_real %>% mutate(scenario = "Real LAD"),
+        if (!is.null(prof_unif)) prof_unif %>% mutate(scenario = "Uniform LAD")
+      ) %>%
+        mutate(Cluster = as.character(Cluster),
+               plot_id = plot_id,
+               LAI     = LAI,
+               Hmax    = Hmax)
+    }
+  )
+
+  if (nrow(df_profiles) == 0) {
+    warning("[verify_cluster1_peak] Aucun profil extrait pour Cluster 1.")
+    return(invisible(NULL))
+  }
+
+  df_profiles <- df_profiles %>%
+    mutate(panel_label = sprintf("Plot %s\nHmax=%.1fm | LAI=%.1f",
+                                  plot_id, Hmax, LAI))
+
+  df_hmax_lines <- df_profiles %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax), .groups = "drop")
+
+  p <- ggplot(df_profiles, aes(x = Tmax_z, y = height_m, colour = scenario)) +
+    geom_path(linewidth = 1.2) +
+    geom_point(size = 2, alpha = 0.7) +
+    geom_hline(data      = df_hmax_lines,
+               aes(yintercept = Hmax),
+               linetype  = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    scale_colour_manual(
+      values = c("Real LAD" = "#31688e", "Uniform LAD" = "#d8576b")
+    ) +
+    labs(
+      title    = "V\u00e9rification pic sol \u2014 Cluster 1 (canicule_date)",
+      subtitle = sprintf("%d plots Cluster 1 ordonn\u00e9s par distance \u00e0 la m\u00e9diane",
+                         nrow(c1_meta)),
+      x      = expression(T[max] ~ "simul\u00e9e" ~ (degree*C)),
+      y      = "Hauteur (m)",
+      colour = "Sc\u00e9nario"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"))
+
+  png_path <- file.path(out_dir, "h2_verify_cluster1_peak.png")
+  csv_path <- file.path(out_dir, "h2_verify_cluster1_peak.csv")
+
+  save_plot(p, png_path, width = 14, height = 6)
+  write.csv(df_profiles, csv_path, row.names = FALSE)
+  cat(sprintf("  [verify_cluster1_peak] PNG : %s\n", png_path))
+  cat(sprintf("  [verify_cluster1_peak] CSV : %s\n", csv_path))
+
+  invisible(list(plot = p, data = df_profiles))
+}
+
 #' Produire la figure en 3 panneaux (un par cluster) : Tmax vs hauteur,
 #' Real LAD vs Uniform LAD.
 #'
@@ -1110,15 +1293,24 @@ plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
     mutate(panel_label = sprintf("Cluster %s\nHmax = %.1f m | LAI = %.1f",
                                   Cluster, Hmax, LAI))
 
+  # B1 : ligne Hmax par panneau
+  df_hmax_lines <- df_profiles %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax), .groups = "drop")
+
   p <- ggplot(df_profiles, aes(x = Tmax_z, y = height_m, colour = scenario)) +
     geom_path(linewidth = 1.2) +
     geom_point(size = 2, alpha = 0.7) +
+    geom_hline(data      = df_hmax_lines,
+               aes(yintercept = Hmax),
+               linetype  = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
     facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
     scale_colour_manual(
       values = c("Real LAD" = "#31688e", "Uniform LAD" = "#d8576b")
     ) +
     labs(
-      title    = "Profils verticaux de Tmax — Real LAD vs Uniform LAD",
+      title    = "Profils verticaux de Tmax \u2014 Real LAD vs Uniform LAD",
       subtitle = sprintf(
         "Plot m\u00e9dian de chaque cluster  |  Mode : %s", summary_mode
       ),
@@ -1130,7 +1322,7 @@ plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
     theme(legend.position = "bottom",
           strip.text      = element_text(face = "bold"))
 
-  # 5. Sauvegarde PNG + CSV
+  # 5. Sauvegarde PNG + CSV (figure principale)
   png_path <- file.path(out_dir,
     sprintf("h2_vertical_tmax_profiles_%s.png", summary_mode))
   csv_path <- file.path(out_dir,
@@ -1140,6 +1332,43 @@ plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
   write.csv(df_profiles, csv_path, row.names = FALSE)
   cat(sprintf("  [vertical profile] PNG : %s\n", png_path))
   cat(sprintf("  [vertical profile] CSV : %s\n", csv_path))
+
+  # 6. B2 : panneau différence Real - Uniform (patchwork)
+  if (requireNamespace("patchwork", quietly = TRUE) &&
+      length(unique(df_profiles$scenario)) == 2) {
+    df_diff <- df_profiles %>%
+      tidyr::pivot_wider(
+        id_cols     = c(Cluster, nair, height_m, panel_label),
+        names_from  = scenario,
+        values_from = Tmax_z
+      ) %>%
+      dplyr::filter(!is.na(`Real LAD`) & !is.na(`Uniform LAD`)) %>%
+      dplyr::mutate(Diff = `Real LAD` - `Uniform LAD`)
+
+    if (nrow(df_diff) > 0) {
+      p_diff <- ggplot(df_diff, aes(x = Diff, y = height_m)) +
+        geom_path(linewidth = 1.0, colour = "#5ec962") +
+        geom_vline(xintercept = 0, linetype = "dotted",
+                   colour = "grey50", linewidth = 0.7) +
+        geom_hline(data      = df_hmax_lines,
+                   aes(yintercept = Hmax),
+                   linetype  = "dashed", colour = "firebrick",
+                   linewidth = 0.8, inherit.aes = FALSE) +
+        facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+        labs(
+          x = expression(Delta * T[max] ~ "(Real \u2212 Uniform)" ~ (degree*C)),
+          y = "Hauteur (m)"
+        ) +
+        theme_bw(base_size = 11) +
+        theme(strip.text = element_blank())
+
+      p_combined <- p / p_diff + patchwork::plot_layout(heights = c(2, 1))
+      diff_path  <- file.path(out_dir,
+        sprintf("h2_vertical_tmax_profiles_%s_with_diff.png", summary_mode))
+      save_plot(p_combined, diff_path, width = 14, height = 8)
+      cat(sprintf("  [vertical profile] PNG avec diff : %s\n", diff_path))
+    }
+  }
 
   invisible(list(plot = p, data = df_profiles, medians = medians))
 }
@@ -1257,6 +1486,41 @@ main <- function() {
         date_seq        = CFG$date_seq,
         out_dir         = "outputs/h2",
         summary_mode    = "canicule_date"
+      )
+      plot_vertical_tmax_profiles(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2",
+        summary_mode    = "median_date"
+      )
+
+      # ---- Diagnostic pic proche du sol — Cluster 1 ---------------------------
+      cat("[vertical] Diagnostic pic Cluster 1 (verify_cluster1_peak)...\n")
+      c1_full <- df_sample %>% filter(as.character(Cluster) == "1")
+      if (nrow(c1_full) > 0) {
+        # Plot médian C1 : profil LAD pour vérification visuelle
+        c1_med_meta <- select_cluster_median_plots(c1_full)
+        if (!is.null(c1_med_meta) && nrow(c1_med_meta) > 0) {
+          c1_row <- df_sample %>%
+            filter(abs(x - c1_med_meta$x[1]) < 0.5,
+                   abs(y - c1_med_meta$y[1]) < 0.5) %>%
+            slice(1)
+          if (nrow(c1_row) > 0) {
+            plot_lad_profile_for_plot(
+              c1_row,
+              out_path = "outputs/h2/c1_median_lad_profile.png"
+            )
+          }
+        }
+      }
+      verify_cluster1_peak(
+        df_sample,
+        real_lad_dir    = file.path(CFG$out_h2, "H2_real_LAD"),
+        uniform_lad_dir = file.path(CFG$out_h2, "H2_uniform_LAD"),
+        date_seq        = CFG$date_seq,
+        out_dir         = "outputs/h2"
       )
     }
   }
