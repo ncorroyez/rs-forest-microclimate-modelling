@@ -95,8 +95,8 @@ CFG <- list(
   date_seq        = seq(as.Date("2021-06-01"), as.Date("2021-09-30"), by = "day"),
   ids_to_remove   = c("41_13", "41_14", "41_20", "41_41", "41_50", "41_51", "41_53"),
   agg_factor      = 2,        # 10 m → 20 m aggregation
-  n_per_archetype = 100,      # cLHS sample size per archetype
-  k_clusters      = NULL,     # K-means clusters for archetype labelling
+  n_per_cluster   = 100,      # cLHS sample size per cluster
+  k_clusters      = NULL,     # K-means cluster assignment per plot
   heatwave_thr    = 30,       # °C threshold for heatwave subset
   out_h2          = "out_files/H2_uniform_vs_real",
   out_h1_forward  = "out_files/H1_forward",
@@ -112,14 +112,13 @@ FLAGS <- list(
   RUN_H2_UNIFORM_VS_REAL= TRUE,   # H2 first pass
   RUN_H1_FORWARD        = TRUE,   # forward inclusion
   RUN_H1_LOO            = TRUE,   # leave-one-out
-  RUN_FPCA              = TRUE,   # Always run FPCA to analyze shapes
-  
+
   RUN_GAMM_EMULATOR     = TRUE,   # Statistical emulator
   USE_MACROCLIMATE_GAMM = TRUE,   # Include physical meteorology in GAMM
-  GAMM_SHAPE_VAR        = "H_MEDIAN",  # Choose shape predictor: "FPC", "H_MEDIAN", or "NONE"
-  
+  GAMM_SHAPE_VAR        = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
+
   RUN_HOBO_VALIDATION   = TRUE,   # MuSICA at HOBO locations
-  RUN_S2_ANNEX          = TRUE,   # Sentinel-2 comparison (H3)
+  RUN_S2_ANNEX          = FALSE,  # Sentinel-2 annex (H3) — reporter à plus tard (cf. retours encadrants)
   RUN_H1_FACTORIAL      = FALSE   # heavy, off by default
 )
 
@@ -276,35 +275,68 @@ optimise_k_elbow <- function(df_scaled, k_range = 1:10, plot_elbow = TRUE) {
   list(opt_k = opt_k, wss = wss, k_range = k_range)
 }
 
-label_archetypes <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
+label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
   df_in <- df_forest %>% dplyr::select(all_of(vars))
   ok    <- complete.cases(df_in)
   df_scaled <- scale(df_in[ok, ])
-  
+
   if (is.null(k)) {
     cat("  [Auto-K] Determining optimal number of clusters via elbow method...\n")
     k <- optimise_k_elbow(df_scaled, k_range = 1:max_k)$opt_k
     cat(sprintf("  [Auto-K] Optimal k selected: %d\n", k))
   }
-  
+
   km <- kmeans(df_scaled, centers = k, iter.max = 100, nstart = 25)
-  df_forest$Archetype <- NA_integer_
-  df_forest$Archetype[ok] <- km$cluster
-  df_forest$Archetype <- factor(df_forest$Archetype)
+  df_forest$Cluster <- NA_integer_
+  df_forest$Cluster[ok] <- km$cluster
+  df_forest$Cluster <- factor(df_forest$Cluster)
   df_forest
+}
+
+#' Profil LAD moyen par cluster — base d'interprétation typologique.
+#'
+#' Permet de nommer visuellement les clusters (bottom-heavy, top-heavy, etc.)
+#' en affichant le profil moyen de chaque groupe dans l'espace de hauteur absolu.
+#'
+#' @param df_forest Dataframe avec colonnes x, y, Cluster (issu de label_clusters).
+#' @param mat_lad   Matrice LAD alignée ligne-à-ligne avec df_forest.
+#' @param z_breaks  Vecteur de hauteurs (m) correspondant aux colonnes de mat_lad.
+plot_cluster_mean_profiles <- function(df_forest, mat_lad, z_breaks) {
+  valid <- !is.na(df_forest$Cluster)
+  clusters <- levels(df_forest$Cluster[valid])
+
+  df_profiles <- lapply(clusters, function(cl) {
+    idx <- which(df_forest$Cluster == cl & !is.na(df_forest$Cluster))
+    mean_prof <- colMeans(mat_lad[idx, , drop = FALSE], na.rm = TRUE)
+    data.frame(height = z_breaks, density = mean_prof, Cluster = cl, n = length(idx))
+  })
+  df_profiles <- bind_rows(df_profiles) %>%
+    mutate(label = sprintf("Cluster %s\n(n = %d)", Cluster, n))
+
+  ggplot(df_profiles, aes(x = density, y = height, colour = Cluster)) +
+    geom_path(linewidth = 1.2) +
+    facet_wrap(~ label, nrow = 1) +
+    scale_colour_viridis_d(option = "turbo") +
+    labs(
+      title    = "Profil LAD moyen par cluster \u2014 base d\u2019interpr\u00e9tation typologique",
+      subtitle = "K-means sur LAI, Hmax, fCover (forêt entière) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
+      x        = "Densit\u00e9 foliaire LAD (m\u207b\u00b9)",
+      y        = "Hauteur (m)"
+    ) +
+    theme(legend.position = "none")
 }
 
 # ==============================================================================
 # SECTION 4.  cLHS SAMPLING
 # ==============================================================================
 
-sample_clhs_per_archetype <- function(df_forest, n_per_archetype = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
+sample_clhs_per_cluster <- function(df_forest, n_per_cluster = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
   df_forest %>%
-    filter(!is.na(Archetype)) %>%
-    split(.$Archetype) %>%
+    filter(!is.na(Cluster)) %>%
+    split(.$Cluster) %>%
     map_dfr(function(df_sub) {
       df_lhs   <- df_sub %>% dplyr::select(x, y, all_of(vars))
-      n_target <- min(n_per_archetype, nrow(df_sub))
+      n_target <- min(n_per_cluster, nrow(df_sub))
       lhs_res  <- clhs::clhs(df_lhs, size = n_target, iter = iter, simple = FALSE, progress = FALSE)
       df_sub[lhs_res$index_samples, ]
     })
@@ -476,7 +508,7 @@ extract_all_scenarios <- function(scenario_paths, df_macro, date_seq) {
 }
 
 join_with_sample <- function(df_daily, df_sample) {
-  df_meta <- df_sample %>% dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
+  df_meta <- df_sample %>% dplyr::select(x, y, Cluster, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
   df_daily %>% inner_join(df_meta, by = c("x", "y"))
 }
 
@@ -612,15 +644,15 @@ plot_fpc_loadings <- function(fpca_res) {
   ggplot(df_long, aes(x = loading, y = rel_z, colour = FPC)) + geom_path(linewidth = 1.1) + geom_vline(xintercept = 0, linetype = "dashed") + facet_wrap(~ FPC, nrow = 1) + scale_colour_viridis_d(option = "turbo", end = 0.85) + labs(title = "Per-height contribution of each FPC (FPCA loadings)", x = "Loading", y = "Relative height (Z/Hmax)") + theme(legend.position = "none")
 }
 
-plot_fpc_scatters <- function(fpca_res, archetype_vec = NULL) {
+plot_fpc_scatters <- function(fpca_res, cluster_vec = NULL) {
   scores <- as.data.frame(fpca_res$fpca$scores[, 1:3])
   names(scores) <- c("FPC1", "FPC2", "FPC3")
-  if (!is.null(archetype_vec)) scores$Archetype <- factor(archetype_vec)
-  
+  if (!is.null(cluster_vec)) scores$Cluster <- factor(cluster_vec)
+
   base <- function(xv, yv) {
     p <- ggplot(scores, aes(x = .data[[xv]], y = .data[[yv]]))
-    if (!is.null(archetype_vec)) {
-      p <- p + geom_point(aes(colour = Archetype), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
+    if (!is.null(cluster_vec)) {
+      p <- p + geom_point(aes(colour = Cluster), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
     } else {
       p <- p + geom_point(alpha = 0.4, colour = "#31688e")
     }
@@ -656,11 +688,13 @@ prepare_gamm_data <- function(df_daily, df_sample, fpc_scores = NULL, h_median_v
     df <- df %>% left_join(df_sample %>% dplyr::select(x, y, H_median), by = c("x", "y"))
   }
   
-  scale_cols <- c("LAI", "Hmax", "fCover", "H_median", "Tmax_macro", 
+  if ("Cluster" %in% names(df)) df$Cluster <- as.factor(df$Cluster)
+
+  scale_cols <- c("LAI", "Hmax", "fCover", "H_median", "Tmax_macro",
                   "Wind_mean", "Rad_mean", "VPD_mean", "Rain_sum")
   cols_to_scale <- intersect(scale_cols, names(df))
   for (nm in cols_to_scale) df[[paste0(nm, "_sc")]] <- as.numeric(scale(df[[nm]]))
-  
+
   if (!is.null(fpc_scores)) {
     fpc_df <- as.data.frame(fpc_scores)
     names(fpc_df) <- paste0("FPC", seq_len(ncol(fpc_df)), "_sc")
@@ -684,6 +718,10 @@ fit_reference_gamm <- function(df_gamm, shape_type = "NONE", use_macroclimate = 
   }
   
   shape_terms <- switch(shape_type,
+                        "CLUSTER" = {
+                          cat("  [GAMM] Including profile Cluster type as categorical predictor...\n")
+                          c("Cluster")   # terme paramétrique factoriel (directement interprétable)
+                        },
                         "FPC" = {
                           cat("  [GAMM] Including FPC scores as shape predictors...\n")
                           c("s(FPC1_sc)", "s(FPC2_sc)", "s(FPC3_sc)")
@@ -708,20 +746,21 @@ fit_reference_gamm <- function(df_gamm, shape_type = "NONE", use_macroclimate = 
 #' Plot marginal effects of the GAMM predictors.
 plot_gamm_marginal_effects <- function(gam_model, shape_type = "NONE", use_macroclimate = TRUE) {
   terms_to_plot <- c("LAI_sc", "Hmax_sc")
-  
-  if (shape_type == "FPC") terms_to_plot <- c(terms_to_plot, "FPC1_sc")
+
+  if (shape_type == "CLUSTER") terms_to_plot <- c(terms_to_plot, "Cluster")
+  if (shape_type == "FPC")     terms_to_plot <- c(terms_to_plot, "FPC1_sc")
   if (shape_type == "H_MEDIAN") terms_to_plot <- c(terms_to_plot, "H_median_sc")
   if (use_macroclimate) terms_to_plot <- c(terms_to_plot, "VPD_mean_sc", "Wind_mean_sc", "Rad_mean_sc")
-  
+
   plots <- lapply(terms_to_plot, function(term) {
     pred <- ggpredict(gam_model, terms = term)
     plot(pred) +
       labs(title = paste("Effect of", gsub("_sc", "", term)),
-           x = paste(gsub("_sc", "", term), "(Scaled)"),
-           y = "Predicted ΔTmax (°C)") +
+           x = if (term == "Cluster") "Profile cluster type" else paste(gsub("_sc", "", term), "(Scaled)"),
+           y = "Predicted \u0394Tmax (\u00b0C)") +
       theme_bw() + theme(plot.title = element_text(size = 10))
   })
-  
+
   wrap_plots(plots, ncol = 2) + plot_annotation(title = "GAMM Marginal Effects", subtitle = "Holding all other variables at their mean")
 }
 
@@ -844,19 +883,43 @@ main <- function() {
   rasters <- load_lidar_rasters(CFG$in_dir, CFG$agg_factor)
   
   cat("[2/7] Building forest dataframe...\n")
-  fd      <- build_forest_dataframe(rasters$stack)
-  df_forest <- label_archetypes(fd$df, k = CFG$k_clusters)
-  
+  fd        <- build_forest_dataframe(rasters$stack)
+  df_forest <- label_clusters(fd$df, k = CFG$k_clusters)
+
   df_macro <- extract_macro_daily(CFG$forcing_file, CFG$date_seq)
-  
+
+  # ---- 2b. FPCA sur la forêt ENTIÈRE (avant échantillonnage) -----------------
+  # Recommandation encadrants : l'ACP fonctionnelle doit caractériser la
+  # variabilité de l'ensemble du peuplement, pas du seul échantillon cLHS.
+  cat("[2b] FPCA sur la forêt entière (avant cLHS)...\n")
+  fpca_res <- compute_fpca(fd$mat_lad, fd$df$Hmax, fd$z_breaks)
+  cat(sprintf("    FPC variance (forêt entière) : %s\n",
+              paste(round(100 * fpca_res$varprop, 1), collapse = " / ")))
+  print(plot_fpc_harmonics(fpca_res, fd$mat_lad, fd$z_breaks, fd$df$Hmax))
+  print(plot_fpc_loadings(fpca_res))
+  print(plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster))
+  print(plot_cluster_mean_profiles(df_forest, fd$mat_lad, fd$z_breaks))
+
+  # ---- 3. cLHS sampling -------------------------------------------------------
   if (FLAGS$RUN_CLHS) {
     cat("[3/7] cLHS sampling...\n")
-    df_sample <- sample_clhs_per_archetype(df_forest, CFG$n_per_archetype)
+    df_sample <- sample_clhs_per_cluster(df_forest, CFG$n_per_cluster)
     saveRDS(df_sample, file.path(CFG$out_dir, "clhs_sample.rds"))
   } else {
     df_sample <- readRDS(file.path(CFG$out_dir, "clhs_sample.rds"))
+    # Compatibilité : RDS anciens contiennent "Archetype" au lieu de "Cluster"
+    if ("Archetype" %in% names(df_sample) && !"Cluster" %in% names(df_sample)) {
+      df_sample <- df_sample %>% rename(Cluster = Archetype)
+    }
   }
   cat(sprintf("    sample size: %d plots\n", nrow(df_sample)))
+
+  # Projection des scores FPCA (forêt entière) sur le sous-ensemble cLHS.
+  # Les scores sont alignés ligne-à-ligne avec fd$df / df_forest ; on retrouve
+  # les indices par correspondance (x, y).
+  idx_sample       <- match(paste(df_sample$x, df_sample$y),
+                            paste(df_forest$x, df_forest$y))
+  fpc_scores_sample <- fpca_res$fpca$scores[idx_sample, 1:3]
   
   ref_sc <- scenario_reference(df_sample)
   
@@ -906,47 +969,34 @@ main <- function() {
     print(plot_forward_curve(df_scores, forward_order))
   }
   
-  # ---- 6. FPCA --------------------------------------------------------------
-  fpca_res <- NULL
-  if (FLAGS$RUN_FPCA || FLAGS$GAMM_SHAPE_VAR == "FPC") {
-    cat("[6/7] FPCA on cLHS sample...\n")
-    mat_sample <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
-    mat_sample[is.na(mat_sample)] <- 0
-    z_breaks <- as.numeric(gsub("LAD_Layer_", "", colnames(mat_sample)))
-    fpca_res <- compute_fpca(mat_sample, df_sample$Hmax, z_breaks)
-    
-    cat(sprintf("    FPC variance: %s\n", paste(round(100 * fpca_res$varprop, 1), collapse = " / ")))
-    print(plot_fpc_harmonics(fpca_res, mat_sample, z_breaks, df_sample$Hmax))
-    print(plot_fpc_loadings(fpca_res))
-    print(plot_fpc_scatters(fpca_res, archetype_vec = df_sample$Archetype))
-  }
-  
-  # ---- 7. GAMM emulator -----------------------------------------------------
+  # ---- 6. GAMM emulator -----------------------------------------------------
   if (FLAGS$RUN_GAMM_EMULATOR) {
-    cat("[7/7] GAMM emulator on reference scenario...\n")
+    cat("[6/7] GAMM emulator on reference scenario...\n")
     df_ref_daily <- df_all_scenarios %>% filter(scenario == ref_sc$name) %>% join_with_sample(df_sample)
-    
-    # Resolve shape predictors
-    fpc_scores <- NULL
-    h_median_vec <- NULL
-    
-    if (FLAGS$GAMM_SHAPE_VAR == "FPC") {
-      fpc_scores <- fpca_res$fpca$scores[, 1:3]
-    } else if (FLAGS$GAMM_SHAPE_VAR == "H_MEDIAN") {
-      mat_sample <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
-      mat_sample[is.na(mat_sample)] <- 0
-      z_breaks   <- as.numeric(gsub("LAD_Layer_", "", colnames(mat_sample)))
-      h_median_vec <- compute_h_median(mat_sample, z_breaks)
-    }
-    
-    df_gamm <- prepare_gamm_data(df_ref_daily, df_sample, fpc_scores = fpc_scores, h_median_vec = h_median_vec)
-    
-    gam_ref <- fit_reference_gamm(df_gamm, shape_type = FLAGS$GAMM_SHAPE_VAR, use_macroclimate = FLAGS$USE_MACROCLIMATE_GAMM)
+
+    # Résolution des prédicteurs de forme (scores FPCA déjà calculés sur la
+    # forêt entière et projetés sur l'échantillon à l'étape 2b/3).
+    fpc_scores   <- if (FLAGS$GAMM_SHAPE_VAR == "FPC") fpc_scores_sample else NULL
+    h_median_vec <- if (FLAGS$GAMM_SHAPE_VAR == "H_MEDIAN") {
+      mat_s  <- df_sample %>% dplyr::select(starts_with("LAD_Layer_")) %>% as.matrix()
+      mat_s[is.na(mat_s)] <- 0
+      compute_h_median(mat_s, as.numeric(gsub("LAD_Layer_", "", colnames(mat_s))))
+    } else NULL
+    # CLUSTER : déjà présent dans df_gamm via join_with_sample → rien à ajouter.
+
+    df_gamm <- prepare_gamm_data(df_ref_daily, df_sample,
+                                  fpc_scores = fpc_scores, h_median_vec = h_median_vec)
+
+    gam_ref <- fit_reference_gamm(df_gamm,
+                                   shape_type      = FLAGS$GAMM_SHAPE_VAR,
+                                   use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
     print(summary(gam_ref))
-    
-    p_effects <- plot_gamm_marginal_effects(gam_ref, shape_type = FLAGS$GAMM_SHAPE_VAR, use_macroclimate = FLAGS$USE_MACROCLIMATE_GAMM)
+
+    p_effects <- plot_gamm_marginal_effects(gam_ref,
+                                             shape_type      = FLAGS$GAMM_SHAPE_VAR,
+                                             use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
     print(p_effects)
-    
+
     diag_res <- diagnose_residuals(gam_ref, df_gamm)
     print(diag_res)
   }
