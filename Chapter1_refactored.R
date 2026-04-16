@@ -95,8 +95,8 @@ CFG <- list(
   date_seq        = seq(as.Date("2021-06-01"), as.Date("2021-09-30"), by = "day"),
   ids_to_remove   = c("41_13", "41_14", "41_20", "41_41", "41_50", "41_51", "41_53"),
   agg_factor      = 2,        # 10 m → 20 m aggregation
-  n_per_archetype = 100,      # cLHS sample size per archetype
-  k_clusters      = NULL,     # K-means clusters for archetype labelling
+  n_per_cluster   = 100,      # cLHS sample size per cluster
+  k_clusters      = NULL,     # K-means cluster assignment per plot
   heatwave_thr    = 30,       # °C threshold for heatwave subset
   out_h2          = "out_files/H2_uniform_vs_real",
   out_h1_forward  = "out_files/H1_forward",
@@ -276,7 +276,7 @@ optimise_k_elbow <- function(df_scaled, k_range = 1:10, plot_elbow = TRUE) {
   list(opt_k = opt_k, wss = wss, k_range = k_range)
 }
 
-label_archetypes <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
+label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"), max_k = 10) {
   df_in <- df_forest %>% dplyr::select(all_of(vars))
   ok    <- complete.cases(df_in)
   df_scaled <- scale(df_in[ok, ])
@@ -288,9 +288,9 @@ label_archetypes <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCove
   }
   
   km <- kmeans(df_scaled, centers = k, iter.max = 100, nstart = 25)
-  df_forest$Archetype <- NA_integer_
-  df_forest$Archetype[ok] <- km$cluster
-  df_forest$Archetype <- factor(df_forest$Archetype)
+  df_forest$Cluster <- NA_integer_
+  df_forest$Cluster[ok] <- km$cluster
+  df_forest$Cluster <- factor(df_forest$Cluster)
   df_forest
 }
 
@@ -298,13 +298,13 @@ label_archetypes <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCove
 # SECTION 4.  cLHS SAMPLING
 # ==============================================================================
 
-sample_clhs_per_archetype <- function(df_forest, n_per_archetype = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
+sample_clhs_per_cluster <- function(df_forest, n_per_cluster = 100, vars = c("LAI", "Hmax", "fCover"), iter = 10000) {
   df_forest %>%
-    filter(!is.na(Archetype)) %>%
-    split(.$Archetype) %>%
+    filter(!is.na(Cluster)) %>%
+    split(.$Cluster) %>%
     map_dfr(function(df_sub) {
       df_lhs   <- df_sub %>% dplyr::select(x, y, all_of(vars))
-      n_target <- min(n_per_archetype, nrow(df_sub))
+      n_target <- min(n_per_cluster, nrow(df_sub))
       lhs_res  <- clhs::clhs(df_lhs, size = n_target, iter = iter, simple = FALSE, progress = FALSE)
       df_sub[lhs_res$index_samples, ]
     })
@@ -476,7 +476,7 @@ extract_all_scenarios <- function(scenario_paths, df_macro, date_seq) {
 }
 
 join_with_sample <- function(df_daily, df_sample) {
-  df_meta <- df_sample %>% dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
+  df_meta <- df_sample %>% dplyr::select(x, y, Cluster, LAI, Hmax, fCover, VCI, starts_with("LAD_Layer_"))
   df_daily %>% inner_join(df_meta, by = c("x", "y"))
 }
 
@@ -612,15 +612,15 @@ plot_fpc_loadings <- function(fpca_res) {
   ggplot(df_long, aes(x = loading, y = rel_z, colour = FPC)) + geom_path(linewidth = 1.1) + geom_vline(xintercept = 0, linetype = "dashed") + facet_wrap(~ FPC, nrow = 1) + scale_colour_viridis_d(option = "turbo", end = 0.85) + labs(title = "Per-height contribution of each FPC (FPCA loadings)", x = "Loading", y = "Relative height (Z/Hmax)") + theme(legend.position = "none")
 }
 
-plot_fpc_scatters <- function(fpca_res, archetype_vec = NULL) {
+plot_fpc_scatters <- function(fpca_res, cluster_vec = NULL) {
   scores <- as.data.frame(fpca_res$fpca$scores[, 1:3])
   names(scores) <- c("FPC1", "FPC2", "FPC3")
-  if (!is.null(archetype_vec)) scores$Archetype <- factor(archetype_vec)
-  
+  if (!is.null(cluster_vec)) scores$Cluster <- factor(cluster_vec)
+
   base <- function(xv, yv) {
     p <- ggplot(scores, aes(x = .data[[xv]], y = .data[[yv]]))
-    if (!is.null(archetype_vec)) {
-      p <- p + geom_point(aes(colour = Archetype), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
+    if (!is.null(cluster_vec)) {
+      p <- p + geom_point(aes(colour = Cluster), alpha = 0.5) + scale_colour_viridis_d(option = "turbo")
     } else {
       p <- p + geom_point(alpha = 0.4, colour = "#31688e")
     }
@@ -845,16 +845,20 @@ main <- function() {
   
   cat("[2/7] Building forest dataframe...\n")
   fd      <- build_forest_dataframe(rasters$stack)
-  df_forest <- label_archetypes(fd$df, k = CFG$k_clusters)
+  df_forest <- label_clusters(fd$df, k = CFG$k_clusters)
   
   df_macro <- extract_macro_daily(CFG$forcing_file, CFG$date_seq)
   
   if (FLAGS$RUN_CLHS) {
     cat("[3/7] cLHS sampling...\n")
-    df_sample <- sample_clhs_per_archetype(df_forest, CFG$n_per_archetype)
+    df_sample <- sample_clhs_per_cluster(df_forest, CFG$n_per_cluster)
     saveRDS(df_sample, file.path(CFG$out_dir, "clhs_sample.rds"))
   } else {
     df_sample <- readRDS(file.path(CFG$out_dir, "clhs_sample.rds"))
+    # Compatibilité : RDS anciens contiennent "Archetype" au lieu de "Cluster"
+    if ("Archetype" %in% names(df_sample) && !"Cluster" %in% names(df_sample)) {
+      df_sample <- df_sample %>% rename(Cluster = Archetype)
+    }
   }
   cat(sprintf("    sample size: %d plots\n", nrow(df_sample)))
   
@@ -918,7 +922,7 @@ main <- function() {
     cat(sprintf("    FPC variance: %s\n", paste(round(100 * fpca_res$varprop, 1), collapse = " / ")))
     print(plot_fpc_harmonics(fpca_res, mat_sample, z_breaks, df_sample$Hmax))
     print(plot_fpc_loadings(fpca_res))
-    print(plot_fpc_scatters(fpca_res, archetype_vec = df_sample$Archetype))
+    print(plot_fpc_scatters(fpca_res, cluster_vec = df_sample$Cluster))
   }
   
   # ---- 7. GAMM emulator -----------------------------------------------------
