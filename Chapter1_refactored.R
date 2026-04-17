@@ -111,6 +111,7 @@ FLAGS <- list(
   RUN_CLHS              = FALSE,  # FALSE = réutilise clhs_sample.rds existant
   SKIP_EXISTING_SCENARIOS = TRUE, # TRUE = skip tout répertoire scénario déjà peuplé
   RUN_H2_UNIFORM_VS_REAL= TRUE,   # H2 first pass
+  RUN_H2_CLUSTER_TYPE   = TRUE,   # H2 cluster-type LAD vs real LAD
   RUN_H1_FORWARD        = TRUE,   # forward inclusion
   RUN_H1_LOO            = TRUE,   # leave-one-out
 
@@ -405,50 +406,40 @@ make_lad_mean_factory <- function(df_sample) {
   }
 }
 
-#' Générateur de profil LAD "type du cluster" — 3e scénario H2.
+#' Constructeur de profils LAD basés sur la moyenne du cluster.
 #'
-#' Calcule le profil moyen de chaque cluster en espace de hauteur RELATIVE
-#' (z/Hmax) depuis fpca_res$mat_rel — ce qui évite le biais des zéros
-#' au-dessus du Hmax de chaque plot.  Pour chaque plot de l'échantillon,
-#' re-projette la forme moyenne du cluster vers les hauteurs absolues entières
-#' (1, 2, … ceiling(Hmax)) puis la ré-échelonne au LAI réel du plot.
+#' Retourne une fonction closure qui, pour une placette donnée,
+#' applique le profil LAD moyen de son cluster d'appartenance
+#' (rescalé par le LAI de la placette).
 #'
-#' @param df_forest  Dataframe forêt avec colonne Cluster (issu de label_clusters).
-#' @param mat_rel    Matrice LAD normalisée en hauteur relative (fpca_res$mat_rel).
-#' @param z_rel      Grille de hauteur relative commune (fpca_res$z_rel).
-#' @return Fonction plot_row → data.frame(height, density).
-make_lad_cluster_type_factory <- function(df_forest, mat_rel, z_rel) {
-  clusters <- levels(df_forest$Cluster)
-  if (is.null(clusters)) clusters <- sort(unique(as.character(df_forest$Cluster)))
+#' @param df_sample  cLHS sample avec colonne Cluster et LAD_Layer_*.
+#' @return function(plot_row) -> data.frame(height, density)
+make_lad_cluster_type_factory <- function(df_sample) {
+  lad_cols <- grep("LAD_Layer_", names(df_sample), value = TRUE)
+  z        <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
 
-  # Profil moyen normalisé (forme pure, somme = 1) par cluster — espace relatif
-  cluster_shapes <- lapply(clusters, function(cl) {
-    idx       <- which(as.character(df_forest$Cluster) == cl)
-    mean_rel  <- colMeans(mat_rel[idx, , drop = FALSE], na.rm = TRUE)
-    s         <- sum(mean_rel)
-    if (s > 0) mean_rel <- mean_rel / s  # forme pure
-    mean_rel
-  })
-  names(cluster_shapes) <- clusters
+  # Pré-calcul du profil moyen par cluster (+ LAI moyen associé)
+  cluster_profiles <- df_sample %>%
+    filter(!is.na(Cluster)) %>%
+    split(.$Cluster) %>%
+    purrr::map(function(df_sub) {
+      mat       <- as.matrix(df_sub[, lad_cols])
+      mat[is.na(mat)] <- 0
+      mean_prof <- colMeans(mat, na.rm = TRUE)
+      list(profile = mean_prof, lai_mean = sum(mean_prof))
+    })
 
   function(plot_row) {
-    cl   <- as.character(plot_row$Cluster)
-    hmax <- as.numeric(plot_row$Hmax)
-    lai  <- as.numeric(plot_row$LAI)
-
-    shape <- cluster_shapes[[cl]]
-    if (is.null(shape)) return(data.frame(height = 1, density = 0))
-
-    # Hauteurs absolues entières (même convention que make_lad_real)
-    z_abs_int <- seq_len(ceiling(hmax))
-    z_abs_rel <- z_abs_int / hmax          # position relative de ces couches
-
-    # Interpole la forme du cluster vers ces hauteurs relatives
-    density   <- pmax(approx(z_rel, shape, z_abs_rel, rule = 2)$y, 0)
-    s         <- sum(density)
-    if (s > 0) density <- density * lai / s  # re-échelonne au LAI réel
-
-    data.frame(height = z_abs_int, density = density)
+    cl <- as.character(plot_row$Cluster)
+    if (is.na(cl) || !(cl %in% names(cluster_profiles))) {
+      return(data.frame(height = z, density = rep(0, length(z))))
+    }
+    cp        <- cluster_profiles[[cl]]
+    hmax      <- as.numeric(plot_row$Hmax)
+    lai       <- as.numeric(plot_row$LAI)
+    scale_fac <- if (cp$lai_mean > 0) lai / cp$lai_mean else 0
+    data.frame(height = z, density = cp$profile * scale_fac) %>%
+      filter(height <= ceiling(hmax) + 1)
   }
 }
 
@@ -464,8 +455,8 @@ scenario_reference <- function(df_sample) {
        fcover_fn = fn_real("fCover"), lad_fn = make_lad_real)
 }
 
-scenarios_h2_uniform_vs_real <- function(df_sample, lad_cluster_type_fn = NULL) {
-  sc <- list(
+scenarios_h2_uniform_vs_real <- function(df_sample) {
+  list(
     REF_real_LAD = list(name = "H2_real_LAD",    lai_fn = fn_real("LAI"),
                         hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"),
                         lad_fn = make_lad_real),
@@ -473,16 +464,22 @@ scenarios_h2_uniform_vs_real <- function(df_sample, lad_cluster_type_fn = NULL) 
                         hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"),
                         lad_fn = make_lad_uniform)
   )
-  if (!is.null(lad_cluster_type_fn)) {
-    sc$CLUSTER_TYPE_LAD <- list(
-      name      = "H2_cluster_type_LAD",
-      lai_fn    = fn_real("LAI"),
-      hmax_fn   = fn_real("Hmax"),
-      fcover_fn = fn_real("fCover"),
-      lad_fn    = lad_cluster_type_fn
+}
+
+scenarios_h2_cluster_type <- function(df_sample) {
+  lad_cluster_fn <- make_lad_cluster_type_factory(df_sample)
+  list(
+    REF_real_LAD     = list(
+      name = "H2_real_LAD",
+      lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"),
+      fcover_fn = fn_real("fCover"), lad_fn = make_lad_real
+    ),
+    CLUSTER_TYPE_LAD = list(
+      name = "H2_cluster_type_LAD",
+      lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"),
+      fcover_fn = fn_real("fCover"), lad_fn = lad_cluster_fn
     )
-  }
-  sc
+  )
 }
 
 scenarios_h1_forward <- function(df_sample) {
@@ -1771,6 +1768,106 @@ plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
   invisible(list(plot = p, data = df_profiles, medians = medians))
 }
 
+#' Profils verticaux Tmax multi-scénarios — figure triptyque comparatif.
+#'
+#' Variante de plot_vertical_tmax_profiles() qui accepte une liste nommée
+#' de répertoires NetCDF (un par scénario) au lieu de seulement 2.
+#' Produit une figure avec N courbes par panneau cluster.
+#'
+#' @param scenarios_dict Liste nommée : list("Etiquette" = "chemin/NetCDF", ...).
+#'   Les noms sont utilisés comme labels dans la légende.
+#' @param df_sample   cLHS (Cluster, x, y, LAI, Hmax, fCover).
+#' @param date_seq    Dates d'intérêt.
+#' @param summary_mode "mean_summer" | "canicule_date" | "median_date".
+#' @param out_path    Chemin PNG de sortie.
+#' @param palette     Vecteur de couleurs (longueur = nb scénarios).
+#' @return Invisible ggplot.
+plot_vertical_tmax_profiles_multi <- function(scenarios_dict, df_sample,
+                                               date_seq,
+                                               summary_mode = "canicule_date",
+                                               out_path = "outputs/h2/h2_vertical_tmax_profiles_3way.png",
+                                               palette = NULL) {
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+
+  medians <- select_cluster_median_plots(df_sample)
+  if (is.null(medians) || nrow(medians) == 0) {
+    warning("[plot_vertical_tmax_profiles_multi] Aucun plot médian — abandon.")
+    return(invisible(NULL))
+  }
+
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  # Extraction pour chaque scénario × plot médian
+  df_all <- purrr::imap_dfr(scenarios_dict, function(nc_dir, sc_label) {
+    purrr::pmap_dfr(medians, function(Cluster, x, y, LAI, Hmax, fCover, plot_id, ...) {
+      nc_file <- find_nc(nc_dir, x, y)
+      prof    <- extract_vertical_tmax_profile(nc_file, date_seq, summary_mode)
+      if (is.null(prof)) return(NULL)
+      prof %>% mutate(scenario  = sc_label,
+                      Cluster   = as.character(Cluster),
+                      plot_id   = plot_id,
+                      LAI       = LAI,
+                      Hmax      = Hmax)
+    })
+  })
+
+  if (nrow(df_all) == 0) {
+    warning("[plot_vertical_tmax_profiles_multi] Aucun profil extrait.")
+    return(invisible(NULL))
+  }
+
+  df_all <- df_all %>%
+    mutate(panel_label = sprintf("Cluster %s\nHmax=%.1fm | LAI=%.1f",
+                                  Cluster, Hmax, LAI))
+
+  df_hmax <- df_all %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax), .groups = "drop")
+
+  sc_names <- names(scenarios_dict)
+  if (is.null(palette)) {
+    palette <- setNames(
+      c("#31688e", "#d8576b", "#5ec962", "#fca50a", "#440154")[seq_along(sc_names)],
+      sc_names
+    )
+  }
+
+  p <- ggplot(df_all, aes(x = Tmax_z, y = height_m,
+                            colour = scenario, linetype = scenario)) +
+    geom_path(linewidth = 1.2) +
+    geom_point(size = 1.8, alpha = 0.7) +
+    geom_hline(data = df_hmax, aes(yintercept = Hmax),
+               linetype = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    scale_colour_manual(values = palette) +
+    scale_linetype_manual(
+      values = setNames(
+        c("solid","dashed","dotted","dotdash","longdash")[seq_along(sc_names)],
+        sc_names
+      )
+    ) +
+    labs(
+      title    = sprintf("Profils verticaux Tmax \u2014 comparaison %d sc\u00e9narios",
+                         length(sc_names)),
+      subtitle = sprintf("Plot m\u00e9dian par cluster  |  Mode : %s", summary_mode),
+      x        = expression(T[max] ~ simulee ~ (degree * C)),
+      y        = "Hauteur (m)",
+      colour   = "Sc\u00e9nario", linetype = "Sc\u00e9nario"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"))
+
+  save_plot(p, out_path, width = 14, height = 7)
+  cat(sprintf("  [3-way profile] PNG : %s\n", out_path))
+  invisible(p)
+}
+
 # ==============================================================================
 # SECTION 16.  main() — orchestrator
 # ==============================================================================
@@ -1858,8 +1955,7 @@ main <- function() {
   # ---- 4. H2 — uniform vs real LAD -----------------------------------------
   if (FLAGS$RUN_H2_UNIFORM_VS_REAL) {
     cat("[4/7] H2: uniform vs real LAD...\n")
-    lad_ct_fn <- make_lad_cluster_type_factory(df_forest, fpca_res$mat_rel, fpca_res$z_rel)
-    h2_scs    <- scenarios_h2_uniform_vs_real(df_sample, lad_cluster_type_fn = lad_ct_fn)
+    h2_scs    <- scenarios_h2_uniform_vs_real(df_sample)
     h2_paths  <- run_scenarios(df_sample, h2_scs, CFG$out_h2,
                                skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
     df_h2    <- extract_all_scenarios(h2_paths, df_macro, CFG$date_seq)
@@ -1947,9 +2043,64 @@ main <- function() {
         date_seq        = CFG$date_seq,
         out_dir         = "outputs/h2"
       )
+
+      # ---- Profils 3 scénarios (Real / Cluster-type / Uniform) ----------------
+      cat("[vertical] Profils verticaux 3 scénarios H2 (canicule)...\n")
+      plot_vertical_tmax_profiles_multi(
+        scenarios_dict = list(
+          "Real LAD"         = file.path(CFG$out_h2, "H2_real_LAD"),
+          "Cluster-type LAD" = file.path(CFG$out_h2, "H2_cluster_type_LAD"),
+          "Uniform LAD"      = file.path(CFG$out_h2, "H2_uniform_LAD")
+        ),
+        df_sample    = df_sample,
+        date_seq     = CFG$date_seq,
+        summary_mode = "canicule_date",
+        out_path     = "outputs/h2/h2_vertical_tmax_profiles_3way_canicule.png"
+      )
     }
   }
-  
+
+  # ---- 4b. H2 — cluster-type LAD vs real LAD --------------------------------
+  if (FLAGS$RUN_H2_CLUSTER_TYPE) {
+    cat("[4b/7] H2: cluster-type LAD vs real LAD...\n")
+    h2_ct_scs   <- scenarios_h2_cluster_type(df_sample)
+    h2_ct_paths <- run_scenarios(df_sample, h2_ct_scs, CFG$out_h2,
+                                 skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
+    df_h2_ct    <- extract_all_scenarios(h2_ct_paths, df_macro, CFG$date_seq)
+    df_h2_ct_w  <- df_h2_ct %>%
+      pivot_wider(id_cols = c(x, y, date),
+                  names_from  = scenario,
+                  values_from = Delta_Tmax) %>%
+      rename_with(~ "Real",    matches("real_LAD")) %>%
+      rename_with(~ "Cluster", matches("cluster_type_LAD")) %>%
+      mutate(diff = Real - Cluster)
+
+    cat(sprintf("    mean per-plot diff (real - cluster-type): %.3f °C\n",
+                mean(df_h2_ct_w$diff, na.rm = TRUE)))
+    cat(sprintf("    sd diff: %.3f °C\n",
+                sd(df_h2_ct_w$diff, na.rm = TRUE)))
+
+    p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w)
+    save_plot(p_h2_ct_pair, "outputs/h2/h2_ct_paired_real_vs_cluster.png")
+    print(p_h2_ct_pair)
+
+    # Summary per cluster
+    summary_ct <- df_h2_ct_w %>%
+      left_join(df_sample %>% select(x, y, Cluster), by = c("x", "y")) %>%
+      group_by(Cluster) %>%
+      summarise(
+        mean_diff = mean(diff, na.rm = TRUE),
+        sd_diff   = sd(diff,   na.rm = TRUE),
+        n         = n(),
+        .groups   = "drop"
+      )
+    cat("[4b] Diff (real - cluster-type) par cluster :\n")
+    print(summary_ct)
+    write.csv(summary_ct,
+              "outputs/h2/h2_ct_summary_by_cluster.csv",
+              row.names = FALSE)
+  }
+
   # ---- 5. H1 — forward / LOO / factorial -----------------------------------
   scenario_paths <- list()
   ref_path <- file.path(CFG$out_h1_forward, ref_sc$name)
