@@ -108,7 +108,8 @@ CFG <- list(
 
 # ---- Run flags ---------------------------------------------------------------
 FLAGS <- list(
-  RUN_CLHS              = TRUE,   # build cLHS sample
+  RUN_CLHS              = FALSE,  # FALSE = réutilise clhs_sample.rds existant
+  SKIP_EXISTING_SCENARIOS = TRUE, # TRUE = skip tout répertoire scénario déjà peuplé
   RUN_H2_UNIFORM_VS_REAL= TRUE,   # H2 first pass
   RUN_H1_FORWARD        = TRUE,   # forward inclusion
   RUN_H1_LOO            = TRUE,   # leave-one-out
@@ -321,27 +322,30 @@ label_clusters <- function(df_forest, k = NULL, vars = c("LAI", "Hmax", "fCover"
 #' @param df_forest Dataframe avec colonnes x, y, Cluster (issu de label_clusters).
 #' @param mat_lad   Matrice LAD alignée ligne-à-ligne avec df_forest.
 #' @param z_breaks  Vecteur de hauteurs (m) correspondant aux colonnes de mat_lad.
-plot_cluster_mean_profiles <- function(df_forest, mat_lad, z_breaks) {
-  valid <- !is.na(df_forest$Cluster)
+plot_cluster_mean_profiles <- function(df_forest, mat_rel, z_rel) {
+  # mat_rel : matrice LAD normalisée en hauteur relative (déjà calculée par
+  #           compute_fpca). Chaque profil est interpolé sur z_rel ∈ [0,1],
+  #           ce qui évite le biais des zéros au-dessus du Hmax de chaque plot.
+  valid    <- !is.na(df_forest$Cluster)
   clusters <- levels(df_forest$Cluster[valid])
 
   df_profiles <- lapply(clusters, function(cl) {
-    idx <- which(df_forest$Cluster == cl & !is.na(df_forest$Cluster))
-    mean_prof <- colMeans(mat_lad[idx, , drop = FALSE], na.rm = TRUE)
-    data.frame(height = z_breaks, density = mean_prof, Cluster = cl, n = length(idx))
+    idx       <- which(df_forest$Cluster == cl & valid)
+    mean_prof <- colMeans(mat_rel[idx, , drop = FALSE], na.rm = TRUE)
+    data.frame(rel_z = z_rel, density = mean_prof, Cluster = cl, n = length(idx))
   })
   df_profiles <- bind_rows(df_profiles) %>%
     mutate(label = sprintf("Cluster %s\n(n = %d)", Cluster, n))
 
-  ggplot(df_profiles, aes(x = density, y = height, colour = Cluster)) +
+  ggplot(df_profiles, aes(x = density, y = rel_z, colour = Cluster)) +
     geom_path(linewidth = 1.2) +
     facet_wrap(~ label, nrow = 1) +
     scale_colour_viridis_d(option = "turbo") +
     labs(
       title    = "Profil LAD moyen par cluster \u2014 base d\u2019interpr\u00e9tation typologique",
-      subtitle = "K-means sur LAI, Hmax, fCover (for\u00eat enti\u00e8re) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
-      x        = "Densit\u00e9 foliaire LAD (m\u207b\u00b9)",
-      y        = "Hauteur (m)"
+      subtitle = "Moyenn\u00e9 en hauteur relative (z/Hmax) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
+      x        = "LAD normalis\u00e9 (relatif)",
+      y        = "Hauteur relative (z / Hmax)"
     ) +
     theme(legend.position = "none")
 }
@@ -401,42 +405,50 @@ make_lad_mean_factory <- function(df_sample) {
   }
 }
 
-#' Générateur de profil LAD "type de cluster" pour le 3e scénario H2.
+#' Générateur de profil LAD "type du cluster" — 3e scénario H2.
 #'
-#' Remplace le profil LAD réel de chaque plot par le profil moyen du cluster
-#' auquel il appartient (calculé sur la forêt entière), reéchelonné au LAI
-#' réel du plot.  Permet de comparer : (1) LAD uniforme, (2) LAD Lidar réel,
-#' (3) LAD profil type = forme du cluster, amplitude du plot.
+#' Calcule le profil moyen de chaque cluster en espace de hauteur RELATIVE
+#' (z/Hmax) depuis fpca_res$mat_rel — ce qui évite le biais des zéros
+#' au-dessus du Hmax de chaque plot.  Pour chaque plot de l'échantillon,
+#' re-projette la forme moyenne du cluster vers les hauteurs absolues entières
+#' (1, 2, … ceiling(Hmax)) puis la ré-échelonne au LAI réel du plot.
 #'
 #' @param df_forest  Dataframe forêt avec colonne Cluster (issu de label_clusters).
-#' @param mat_lad    Matrice LAD alignée ligne-à-ligne avec df_forest
-#'                   (colonnes = niveaux de hauteur en m, non normalisée).
-#' @param z_breaks   Vecteur de hauteurs (m) correspondant aux colonnes de mat_lad.
+#' @param mat_rel    Matrice LAD normalisée en hauteur relative (fpca_res$mat_rel).
+#' @param z_rel      Grille de hauteur relative commune (fpca_res$z_rel).
 #' @return Fonction plot_row → data.frame(height, density).
-make_lad_cluster_type_factory <- function(df_forest, mat_lad, z_breaks) {
+make_lad_cluster_type_factory <- function(df_forest, mat_rel, z_rel) {
   clusters <- levels(df_forest$Cluster)
   if (is.null(clusters)) clusters <- sort(unique(as.character(df_forest$Cluster)))
 
-  # Profil moyen par cluster sur la forêt entière (non normalisé)
-  cluster_profiles <- lapply(clusters, function(cl) {
+  # Profil moyen normalisé (forme pure, somme = 1) par cluster — espace relatif
+  cluster_shapes <- lapply(clusters, function(cl) {
     idx       <- which(as.character(df_forest$Cluster) == cl)
-    mean_prof <- colMeans(mat_lad[idx, , drop = FALSE], na.rm = TRUE)
-    list(profile = mean_prof, mean_lai = sum(mean_prof, na.rm = TRUE))
+    mean_rel  <- colMeans(mat_rel[idx, , drop = FALSE], na.rm = TRUE)
+    s         <- sum(mean_rel)
+    if (s > 0) mean_rel <- mean_rel / s  # forme pure
+    mean_rel
   })
-  names(cluster_profiles) <- clusters
+  names(cluster_shapes) <- clusters
 
   function(plot_row) {
     cl   <- as.character(plot_row$Cluster)
     hmax <- as.numeric(plot_row$Hmax)
     lai  <- as.numeric(plot_row$LAI)
 
-    cp <- cluster_profiles[[cl]]
-    if (is.null(cp) || cp$mean_lai <= 0) {
-      return(data.frame(height = 1, density = 0))
-    }
-    scale_fac <- lai / cp$mean_lai
-    data.frame(height = z_breaks, density = cp$profile * scale_fac) %>%
-      filter(height <= ceiling(hmax) + 1)
+    shape <- cluster_shapes[[cl]]
+    if (is.null(shape)) return(data.frame(height = 1, density = 0))
+
+    # Hauteurs absolues entières (même convention que make_lad_real)
+    z_abs_int <- seq_len(ceiling(hmax))
+    z_abs_rel <- z_abs_int / hmax          # position relative de ces couches
+
+    # Interpole la forme du cluster vers ces hauteurs relatives
+    density   <- pmax(approx(z_rel, shape, z_abs_rel, rule = 2)$y, 0)
+    s         <- sum(density)
+    if (s > 0) density <- density * lai / s  # re-échelonne au LAI réel
+
+    data.frame(height = z_abs_int, density = density)
   }
 }
 
@@ -454,14 +466,13 @@ scenario_reference <- function(df_sample) {
 
 scenarios_h2_uniform_vs_real <- function(df_sample, lad_cluster_type_fn = NULL) {
   sc <- list(
-    REF_real_LAD = list(name = "H2_real_LAD",     lai_fn = fn_real("LAI"),
+    REF_real_LAD = list(name = "H2_real_LAD",    lai_fn = fn_real("LAI"),
                         hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"),
                         lad_fn = make_lad_real),
-    UNIFORM_LAD  = list(name = "H2_uniform_LAD",  lai_fn = fn_real("LAI"),
+    UNIFORM_LAD  = list(name = "H2_uniform_LAD", lai_fn = fn_real("LAI"),
                         hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"),
                         lad_fn = make_lad_uniform)
   )
-  # 3e scénario : profil type du cluster (forme moyenne, amplitude réelle du plot)
   if (!is.null(lad_cluster_type_fn)) {
     sc$CLUSTER_TYPE_LAD <- list(
       name      = "H2_cluster_type_LAD",
@@ -533,9 +544,14 @@ run_musica_one <- function(plot_row, scenario, out_nc_file, forcing_file, musica
   invisible(out_nc_file)
 }
 
-run_musica_scenario <- function(df_sample, scenario, out_dir, forcing_file = CFG$forcing_file, musica_cmd = CFG$musica_cmd, id_prefix = "Sim", force = FALSE) {
+run_musica_scenario <- function(df_sample, scenario, out_dir, forcing_file = CFG$forcing_file, musica_cmd = CFG$musica_cmd, id_prefix = "Sim", force = FALSE, skip_existing = FALSE) {
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   existing <- list.files(out_dir, pattern = "\\.nc$")
+  if (!force && skip_existing && length(existing) > 0) {
+    cat(sprintf("  [skip] %s : %d NC existants — r\u00e9pertoire conserv\u00e9 tel quel\n",
+                scenario$name, length(existing)))
+    return(invisible(out_dir))
+  }
   if (!force && length(existing) >= nrow(df_sample)) return(invisible(out_dir))
   cat(sprintf("\n[scenario: %s] %d plots → %s (%d done)\n", scenario$name, nrow(df_sample), out_dir, length(existing)))
   for (i in seq_len(nrow(df_sample))) {
@@ -547,11 +563,13 @@ run_musica_scenario <- function(df_sample, scenario, out_dir, forcing_file = CFG
   invisible(out_dir)
 }
 
-run_scenarios <- function(df_sample, scenarios, parent_dir, force = FALSE) {
+run_scenarios <- function(df_sample, scenarios, parent_dir, force = FALSE,
+                          skip_existing = getOption("skip_existing_scenarios", FALSE)) {
   paths <- character(length(scenarios)); names(paths) <- names(scenarios)
   for (nm in names(scenarios)) {
     out_d <- file.path(parent_dir, scenarios[[nm]]$name)
-    run_musica_scenario(df_sample, scenarios[[nm]], out_d, force = force)
+    run_musica_scenario(df_sample, scenarios[[nm]], out_d,
+                        force = force, skip_existing = skip_existing)
     paths[nm] <- out_d
   }
   paths
@@ -943,33 +961,28 @@ plot_fpc_scatters <- function(fpca_res, cluster_vec = NULL) {
     plot_layout(guides = "collect") & theme(legend.position = "bottom")
 }
 
-#' Visualiser la qualité de reconstruction FPCA : profils réels vs 3 premières CP.
+#' Qualité de reconstruction FPCA : profils réels vs 3 premières composantes.
 #'
-#' Pour chaque site sélectionné, superpose le profil LAD normalisé réel et
-#' sa reconstruction :  mean(z) + Σ_{k=1}^{3} score_k × FPC_k(z).
-#' Utile pour justifier que 3 CP suffisent et pour présenter la FPCA
-#' à un jury de manière concrète.
+#' Pour chaque site sélectionné, superpose le profil LAD normalisé réel
+#' et sa reconstruction : mean(z) + Σ_{k=1}^{3} score_k × FPC_k(z).
+#' Justifie que 3 CP suffisent et rend la FPCA concrète pour un jury.
 #'
-#' @param fpca_res    Résultat de compute_fpca().
-#' @param idx_sites   Indices explicites des sites. Si NULL, n_sites sites
-#'                    sont sélectionnés régulièrement sur l'axe FPC1.
+#' @param fpca_res    Résultat de compute_fpca() (contient mat_rel, z_rel, fpca).
+#' @param idx_sites   Indices explicites. Si NULL : n_sites sites espacés sur FPC1.
 #' @param n_sites     Nombre de sites si idx_sites est NULL (défaut 6).
-#' @param cluster_vec Vecteur optionnel de labels Cluster (longueur = nrow mat_rel)
-#'                    pour annoter les panneaux.
-#' @param out_path    Chemin de sortie PNG.
+#' @param cluster_vec Vecteur optionnel de labels Cluster pour annoter les panneaux.
+#' @param out_path    Chemin PNG de sortie.
 #' @return Invisible ggplot.
 plot_fpca_reconstruction <- function(fpca_res, idx_sites = NULL, n_sites = 6,
                                       cluster_vec = NULL,
                                       out_path = "outputs/fpca/fpca_reconstruction.png") {
   z_rel       <- fpca_res$z_rel
-  mat_real    <- fpca_res$mat_rel          # n_plots × n_z, normalisé, hauteur relative
+  mat_real    <- fpca_res$mat_rel
   scores      <- fpca_res$fpca$scores
   mean_curve  <- as.numeric(eval.fd(z_rel, fpca_res$fpca$meanfd))
-  harm_matrix <- eval.fd(z_rel, fpca_res$fpca$harmonics)  # n_z × n_harm
+  harm_matrix <- eval.fd(z_rel, fpca_res$fpca$harmonics)
 
   n_plots <- nrow(mat_real)
-
-  # Sélection : espacé sur FPC1 pour montrer la diversité de forme
   if (is.null(idx_sites)) {
     fpc1_order <- order(scores[, 1])
     idx_sites  <- fpc1_order[round(seq(1, n_plots, length.out = n_sites))]
@@ -977,12 +990,9 @@ plot_fpca_reconstruction <- function(fpca_res, idx_sites = NULL, n_sites = 6,
   idx_sites <- idx_sites[idx_sites >= 1 & idx_sites <= n_plots]
 
   df_all <- purrr::imap_dfr(idx_sites, function(i, ii) {
-    recon <- as.numeric(mean_curve + harm_matrix[, 1:3] %*% scores[i, 1:3])
-    recon <- pmax(recon, 0)
-
-    cl_label   <- if (!is.null(cluster_vec)) sprintf(" · Cl.%s", cluster_vec[i]) else ""
-    site_label <- sprintf("Site #%d%s\nFPC1 = %.2f", i, cl_label, scores[i, 1])
-
+    recon <- pmax(as.numeric(mean_curve + harm_matrix[, 1:3] %*% scores[i, 1:3]), 0)
+    cl_label   <- if (!is.null(cluster_vec)) sprintf(" \u00b7 Cl.%s", cluster_vec[i]) else ""
+    site_label <- sprintf("Site #%d%s\nFPC1=%.2f", i, cl_label, scores[i, 1])
     bind_rows(
       data.frame(rel_z = z_rel, lad = mat_real[i, ],
                  source = "R\u00e9el (Lidar)",        site = site_label),
@@ -991,7 +1001,6 @@ plot_fpca_reconstruction <- function(fpca_res, idx_sites = NULL, n_sites = 6,
     )
   })
 
-  # Variance expliquée pour le sous-titre
   var_str <- paste(sprintf("FPC%d=%.1f%%", 1:3, 100 * fpca_res$varprop[1:3]),
                    collapse = " | ")
 
@@ -1009,16 +1018,14 @@ plot_fpca_reconstruction <- function(fpca_res, idx_sites = NULL, n_sites = 6,
       subtitle = var_str,
       x        = "LAD normalis\u00e9 (relatif)",
       y        = "Hauteur relative (z / Hmax)",
-      colour   = NULL, linetype = NULL
+      colour = NULL, linetype = NULL
     ) +
     theme_bw(base_size = 11) +
-    theme(legend.position = "bottom",
-          strip.text      = element_text(size = 8))
+    theme(legend.position = "bottom", strip.text = element_text(size = 8))
 
   dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
   save_plot(p, out_path, width = 14, height = 7)
-  cat(sprintf("  [FPCA reconstruction] %d sites \u2014 PNG : %s\n",
-              length(idx_sites), out_path))
+  cat(sprintf("  [FPCA reconstruction] %d sites \u2014 %s\n", length(idx_sites), out_path))
   invisible(p)
 }
 
@@ -1821,7 +1828,7 @@ main <- function() {
   )
   print(p_fpca_recon)
 
-  p_clust_prof <- plot_cluster_mean_profiles(df_forest, fd$mat_lad, fd$z_breaks)
+  p_clust_prof <- plot_cluster_mean_profiles(df_forest, fpca_res$mat_rel, fpca_res$z_rel)
   save_plot(p_clust_prof, "outputs/clusters/cluster_mean_profiles.png", width = 12, height = 6)
   print(p_clust_prof)
 
@@ -1850,10 +1857,11 @@ main <- function() {
   
   # ---- 4. H2 — uniform vs real LAD -----------------------------------------
   if (FLAGS$RUN_H2_UNIFORM_VS_REAL) {
-    cat("[4/7] H2: uniform vs real LAD vs cluster-type LAD...\n")
-    lad_ct_fn <- make_lad_cluster_type_factory(df_forest, fd$mat_lad, fd$z_breaks)
+    cat("[4/7] H2: uniform vs real LAD...\n")
+    lad_ct_fn <- make_lad_cluster_type_factory(df_forest, fpca_res$mat_rel, fpca_res$z_rel)
     h2_scs    <- scenarios_h2_uniform_vs_real(df_sample, lad_cluster_type_fn = lad_ct_fn)
-    h2_paths  <- run_scenarios(df_sample, h2_scs, CFG$out_h2)
+    h2_paths  <- run_scenarios(df_sample, h2_scs, CFG$out_h2,
+                               skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
     df_h2    <- extract_all_scenarios(h2_paths, df_macro, CFG$date_seq)
     df_h2_w  <- summarise_h2(df_h2)
     
@@ -1945,23 +1953,30 @@ main <- function() {
   # ---- 5. H1 — forward / LOO / factorial -----------------------------------
   scenario_paths <- list()
   ref_path <- file.path(CFG$out_h1_forward, ref_sc$name)
-  run_musica_scenario(df_sample, ref_sc, ref_path)
+  run_musica_scenario(df_sample, ref_sc, ref_path,
+                      skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
   scenario_paths[[ref_sc$name]] <- ref_path
-  
+
   if (FLAGS$RUN_H1_FORWARD) {
     cat("[5a/7] H1 forward inclusion...\n")
     fw_scs <- scenarios_h1_forward(df_sample)
-    scenario_paths <- c(scenario_paths, run_scenarios(df_sample, fw_scs, CFG$out_h1_forward))
+    scenario_paths <- c(scenario_paths,
+      run_scenarios(df_sample, fw_scs, CFG$out_h1_forward,
+                    skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS))
   }
   if (FLAGS$RUN_H1_LOO) {
     cat("[5b/7] H1 leave-one-out...\n")
     loo_scs <- scenarios_h1_loo(df_sample)
-    scenario_paths <- c(scenario_paths, run_scenarios(df_sample, loo_scs, CFG$out_h1_loo))
+    scenario_paths <- c(scenario_paths,
+      run_scenarios(df_sample, loo_scs, CFG$out_h1_loo,
+                    skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS))
   }
   if (FLAGS$RUN_H1_FACTORIAL) {
     cat("[5c/7] H1 full factorial (HEAVY)...\n")
     fac_scs <- scenarios_h1_factorial(df_sample)
-    scenario_paths <- c(scenario_paths, run_scenarios(df_sample, fac_scs, CFG$out_h1_factorial))
+    scenario_paths <- c(scenario_paths,
+      run_scenarios(df_sample, fac_scs, CFG$out_h1_factorial,
+                    skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS))
   }
   
   df_all_scenarios <- extract_all_scenarios(scenario_paths, df_macro, CFG$date_seq)
