@@ -97,6 +97,8 @@ CFG <- list(
   agg_factor      = 2,        # 10 m → 20 m aggregation
   n_per_cluster   = 100,      # cLHS sample size per cluster
   k_clusters      = NULL,     # K-means cluster assignment per plot
+  n_fpc_total     = 6,        # FPCs calculés par compute_fpca (scree plot complet)
+  fpc_min_marginal = 0.10,    # seuil gain marginal : inclure FPC_k si varprop[k] >= seuil
   heatwave_thr    = 30,       # °C threshold for heatwave subset
   out_h2          = "out_files/H2_uniform_vs_real",
   out_h1_forward  = "out_files/H1_forward",
@@ -108,22 +110,22 @@ CFG <- list(
 
 # ---- Run flags ---------------------------------------------------------------
 FLAGS <- list(
-  RUN_CLHS              = FALSE,  # FALSE = réutilise clhs_sample.rds existant
-  SKIP_EXISTING_SCENARIOS = TRUE, # TRUE = skip tout répertoire scénario déjà peuplé
-  RUN_H2_UNIFORM_VS_REAL= TRUE,   # H2 first pass
-  RUN_H2_CLUSTER_TYPE   = TRUE,   # H2 cluster-type LAD vs real LAD
-  RUN_H1_FORWARD        = TRUE,   # forward inclusion
-  RUN_H1_LOO            = TRUE,   # leave-one-out
+  RUN_CLHS                  = TRUE,  # FALSE = réutilise clhs_sample.rds existant
+  SKIP_EXISTING_SCENARIOS   = TRUE, # TRUE = skip tout répertoire scénario déjà peuplé
+  RUN_H2_UNIFORM_VS_REAL    = F,   # H2 first pass
+  RUN_H2_CLUSTER_TYPE       = F,  # H2 cluster-type LAD vs real LAD
+  RUN_H1_FORWARD            = TRUE,   # forward inclusion
+  RUN_H1_LOO                = TRUE,   # leave-one-out
 
-  RUN_GAMM_EMULATOR     = TRUE,   # Statistical emulator
-  USE_MACROCLIMATE_GAMM = TRUE,   # Include physical meteorology in GAMM
-  GAMM_SHAPE_VAR        = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
+  RUN_GAMM_EMULATOR         = TRUE,   # Statistical emulator
+  USE_MACROCLIMATE_GAMM     = TRUE,   # Include physical meteorology in GAMM
+  GAMM_SHAPE_VAR            = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
 
   RUN_VERTICAL_PROFILES     = TRUE,   # profils verticaux Tmax par cluster médian (H2)
-  RUN_H2_STRUCTURE_ANALYSIS = TRUE,   # post-processing léger (< 30 s, pas de simulation)
-  RUN_HOBO_VALIDATION   = TRUE,   # MuSICA at HOBO locations
-  RUN_S2_ANNEX          = T,  # Sentinel-2 annex (H3)
-  RUN_H1_FACTORIAL      = FALSE   # heavy, off by default
+  RUN_H2_STRUCTURE_ANALYSIS = F,   # post-processing léger (< 30 s, pas de simulation)
+  RUN_HOBO_VALIDATION       = TRUE,   # MuSICA at HOBO locations
+  RUN_S2_ANNEX              = TRUE,  # Sentinel-2 annex (H3)
+  RUN_H1_FACTORIAL          = TRUE   # heavy, off by default
 )
 
 dir.create(CFG$out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -371,75 +373,75 @@ sample_clhs_per_cluster <- function(df_forest, n_per_cluster = 100, vars = c("LA
 # SECTION 5.  LAD PROFILE CONSTRUCTORS
 # ==============================================================================
 
-make_lad_real <- function(plot_row) {
-  lad_cols <- grep("LAD_Layer_", names(plot_row), value = TRUE)
-  z        <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
-  d        <- as.numeric(plot_row[lad_cols]); d[is.na(d)] <- 0
-  hmax     <- as.numeric(plot_row$Hmax)
-  data.frame(height = z, density = d) %>% filter(height <= ceiling(hmax) + 1)
+# Helpers communs aux constructeurs LAD
+.lad_rescale <- function(z_real, d, hmax_ref, hmax_tgt, lai_tgt) {
+  z_rel  <- if (hmax_ref > 0) z_real / hmax_ref else z_real
+  z_new  <- z_rel * hmax_tgt
+  z_grid <- seq(1L, ceiling(hmax_tgt))
+  d_new  <- approx(z_new, d, z_grid, rule = 2)$y
+  d_new[is.na(d_new)] <- 0
+  if (sum(d_new) > 1e-9) d_new <- d_new * (lai_tgt / sum(d_new))
+  data.frame(height = z_grid, density = d_new)
 }
 
-make_lad_uniform <- function(plot_row, canopy_base = 2) {
-  hmax       <- as.numeric(plot_row$Hmax)
-  lai        <- as.numeric(plot_row$LAI)
-  max_layer  <- ceiling(hmax)
-  if (max_layer <= canopy_base) return(data.frame(height = 1, density = 0))
-  depth   <- max_layer - canopy_base
+make_lad_real <- function(plot_row, hmax = NULL, lai = NULL) {
+  lad_cols  <- grep("LAD_Layer_", names(plot_row), value = TRUE)
+  z_real    <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
+  d         <- as.numeric(plot_row[lad_cols]); d[is.na(d)] <- 0
+  hmax_real <- as.numeric(plot_row$Hmax)
+  if (is.null(hmax)) hmax <- hmax_real
+  if (is.null(lai))  lai  <- sum(d)
+  .lad_rescale(z_real, d, hmax_real, hmax, lai)
+}
+
+make_lad_uniform <- function(plot_row, hmax = NULL, lai = NULL, canopy_base = 1) {
+  if (is.null(hmax)) hmax <- as.numeric(plot_row$Hmax)
+  if (is.null(lai))  lai  <- as.numeric(plot_row$LAI)
+  max_layer <- ceiling(hmax)
+  if (max_layer <= canopy_base) return(data.frame(height = 1L, density = 0))
+  depth   <- max_layer - canopy_base + 1L
   density <- lai / depth
-  heights <- 1:max_layer
+  heights <- seq_len(max_layer)
   data.frame(height = heights, density = ifelse(heights >= canopy_base, density, 0))
 }
 
 make_lad_mean_factory <- function(df_sample) {
-  lad_cols <- grep("LAD_Layer_", names(df_sample), value = TRUE)
-  z        <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
-  mat      <- as.matrix(df_sample[, lad_cols]); mat[is.na(mat)] <- 0
-  mean_prof<- colMeans(mat, na.rm = TRUE)
-  mean_lai <- sum(mean_prof)
-  
-  function(plot_row) {
-    hmax <- as.numeric(plot_row$Hmax)
-    lai  <- as.numeric(plot_row$LAI)
-    scale_fac <- if (mean_lai > 0) lai / mean_lai else 0
-    data.frame(height = z, density = mean_prof * scale_fac) %>%
-      filter(height <= ceiling(hmax) + 1)
+  lad_cols      <- grep("LAD_Layer_", names(df_sample), value = TRUE)
+  z_real        <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
+  mat           <- as.matrix(df_sample[, lad_cols]); mat[is.na(mat)] <- 0
+  mean_prof     <- colMeans(mat, na.rm = TRUE)
+  hmax_mean_ref <- mean(df_sample$Hmax, na.rm = TRUE)
+
+  function(plot_row, hmax = NULL, lai = NULL) {
+    if (is.null(hmax)) hmax <- as.numeric(plot_row$Hmax)
+    if (is.null(lai))  lai  <- as.numeric(plot_row$LAI)
+    .lad_rescale(z_real, mean_prof, hmax_mean_ref, hmax, lai)
   }
 }
 
-#' Constructeur de profils LAD basés sur la moyenne du cluster.
-#'
-#' Retourne une fonction closure qui, pour une placette donnée,
-#' applique le profil LAD moyen de son cluster d'appartenance
-#' (rescalé par le LAI de la placette).
-#'
-#' @param df_sample  cLHS sample avec colonne Cluster et LAD_Layer_*.
-#' @return function(plot_row) -> data.frame(height, density)
 make_lad_cluster_type_factory <- function(df_sample) {
   lad_cols <- grep("LAD_Layer_", names(df_sample), value = TRUE)
-  z        <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
+  z_real   <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
 
-  # Pré-calcul du profil moyen par cluster (+ LAI moyen associé)
   cluster_profiles <- df_sample %>%
     filter(!is.na(Cluster)) %>%
     split(.$Cluster) %>%
     purrr::map(function(df_sub) {
-      mat       <- as.matrix(df_sub[, lad_cols])
-      mat[is.na(mat)] <- 0
-      mean_prof <- colMeans(mat, na.rm = TRUE)
-      list(profile = mean_prof, lai_mean = sum(mean_prof))
+      mat <- as.matrix(df_sub[, lad_cols]); mat[is.na(mat)] <- 0
+      list(
+        profile       = colMeans(mat, na.rm = TRUE),
+        hmax_mean_ref = mean(df_sub$Hmax, na.rm = TRUE)
+      )
     })
 
-  function(plot_row) {
+  function(plot_row, hmax = NULL, lai = NULL) {
     cl <- as.character(plot_row$Cluster)
-    if (is.na(cl) || !(cl %in% names(cluster_profiles))) {
-      return(data.frame(height = z, density = rep(0, length(z))))
-    }
-    cp        <- cluster_profiles[[cl]]
-    hmax      <- as.numeric(plot_row$Hmax)
-    lai       <- as.numeric(plot_row$LAI)
-    scale_fac <- if (cp$lai_mean > 0) lai / cp$lai_mean else 0
-    data.frame(height = z, density = cp$profile * scale_fac) %>%
-      filter(height <= ceiling(hmax) + 1)
+    if (is.na(cl) || !(cl %in% names(cluster_profiles)))
+      return(data.frame(height = z_real, density = rep(0, length(z_real))))
+    cp <- cluster_profiles[[cl]]
+    if (is.null(hmax)) hmax <- as.numeric(plot_row$Hmax)
+    if (is.null(lai))  lai  <- as.numeric(plot_row$LAI)
+    .lad_rescale(z_real, cp$profile, cp$hmax_mean_ref, hmax, lai)
   }
 }
 
@@ -483,38 +485,57 @@ scenarios_h2_cluster_type <- function(df_sample) {
 }
 
 scenarios_h1_forward <- function(df_sample) {
-  lai_mean <- fn_mean(df_sample, "LAI"); hmax_mean <- fn_mean(df_sample, "Hmax"); fcover_mean <- fn_mean(df_sample, "fCover"); lad_uniform <- make_lad_uniform
+  lai_mean      <- fn_mean(df_sample, "LAI")
+  hmax_mean_val <- round(mean(floor(df_sample$Hmax) + 1, na.rm = TRUE))
+  hmax_mean     <- function(plot_row) hmax_mean_val
+  fcover_absent <- function(plot_row) 1   # canopée fermée homogène, pas de clumping
+  lad_uniform   <- make_lad_uniform
   list(
-    Null_baseline   = list(name = "H1f_0_Null_baseline", lai_fn = lai_mean, hmax_fn = hmax_mean, fcover_fn = fcover_mean, lad_fn = lad_uniform),
-    LAI_only        = list(name = "H1f_1_LAI_only", lai_fn = fn_real("LAI"), hmax_fn = hmax_mean, fcover_fn = fcover_mean, lad_fn = lad_uniform),
-    LAI_Hmax        = list(name = "H1f_2_LAI_Hmax", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fcover_mean, lad_fn = lad_uniform),
-    LAI_Hmax_fCover = list(name = "H1f_3_LAI_Hmax_fCover", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = lad_uniform),
-    Full_real       = list(name = "H1f_4_Full_real", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_real)
+    Null_baseline   = list(name = "H1f_0_Null_baseline",       lai_fn = lai_mean,       hmax_fn = hmax_mean,       fcover_fn = fcover_absent, lad_fn = lad_uniform),
+    LAI_only        = list(name = "H1f_1_LAI_only",             lai_fn = fn_real("LAI"), hmax_fn = hmax_mean,       fcover_fn = fcover_absent, lad_fn = lad_uniform),
+    LAI_Hmax        = list(name = "H1f_2_LAI_Hmax",             lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fcover_absent, lad_fn = lad_uniform),
+    LAI_Hmax_fCover = list(name = "H1f_3_LAI_Hmax_fCover",      lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = lad_uniform),
+    Full_real       = list(name = "H1f_4_Full_real",             lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_real)
   )
 }
 
 scenarios_h1_loo <- function(df_sample) {
-  hmax_mean <- fn_mean(df_sample, "Hmax"); lai_mean <- fn_mean(df_sample, "LAI"); fcover_mean <- fn_mean(df_sample, "fCover"); lad_mean_fn <- make_lad_mean_factory(df_sample)
+  lai_mean      <- fn_mean(df_sample, "LAI")
+  hmax_mean_val <- round(mean(floor(df_sample$Hmax) + 1, na.rm = TRUE))
+  hmax_mean     <- function(plot_row) hmax_mean_val
+  fcover_absent <- function(plot_row) 1   # cohérent avec baseline forward
+  lad_mean_fn   <- make_lad_mean_factory(df_sample)
   list(
-    drop_LAI_mean      = list(name = "H1l_dropLAI_mean", lai_fn = lai_mean, hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_real),
-    drop_Hmax_mean     = list(name = "H1l_dropHmax_mean", lai_fn = fn_real("LAI"), hmax_fn = hmax_mean, fcover_fn = fn_real("fCover"), lad_fn = make_lad_real),
-    drop_fCover_mean   = list(name = "H1l_dropfCover_mean", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fcover_mean, lad_fn = make_lad_real),
-    drop_LAD_uniform   = list(name = "H1l_dropLAD_uniform", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_uniform),
+    drop_LAI_mean      = list(name = "H1l_dropLAI_mean",      lai_fn = lai_mean,       hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_real),
+    drop_Hmax_mean     = list(name = "H1l_dropHmax_mean",     lai_fn = fn_real("LAI"), hmax_fn = hmax_mean,       fcover_fn = fn_real("fCover"), lad_fn = make_lad_real),
+    drop_fCover_mean   = list(name = "H1l_dropfCover_mean",   lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fcover_absent,     lad_fn = make_lad_real),
+    drop_LAD_uniform   = list(name = "H1l_dropLAD_uniform",   lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = make_lad_uniform),
     drop_LAD_meanShape = list(name = "H1l_dropLAD_meanShape", lai_fn = fn_real("LAI"), hmax_fn = fn_real("Hmax"), fcover_fn = fn_real("fCover"), lad_fn = lad_mean_fn)
   )
 }
 
 scenarios_h1_factorial <- function(df_sample) {
-  lai_mean <- fn_mean(df_sample, "LAI"); hmax_mean <- fn_mean(df_sample, "Hmax"); fcover_mean <- fn_mean(df_sample, "fCover"); lad_mean_fn <- make_lad_mean_factory(df_sample)
-  grid <- expand.grid(LAI = c("real", "mean"), Hmax = c("real", "mean"), fCover = c("real", "mean"), LAD = c("real", "meanShape"), stringsAsFactors = FALSE)
+  lai_mean      <- fn_mean(df_sample, "LAI")
+  hmax_mean_val <- round(mean(floor(df_sample$Hmax) + 1, na.rm = TRUE))
+  hmax_mean     <- function(plot_row) hmax_mean_val
+  fcover_absent <- function(plot_row) 1   # cohérent avec baseline forward/LOO
+  grid <- expand.grid(LAI = c("real", "mean"), Hmax = c("real", "mean"),
+                      fCover = c("real", "absent"), LAD = c("real", "uniform"),
+                      stringsAsFactors = FALSE)
   scenarios <- vector("list", nrow(grid))
   for (i in seq_len(nrow(grid))) {
-    g <- grid[i, ]
-    nm <- sprintf("H1F_%s_%s_%s_%s", substr(g$LAI, 1, 1), substr(g$Hmax, 1, 1), substr(g$fCover, 1, 1), substr(g$LAD, 1, 1))
-    scenarios[[i]] <- list(name = nm, lai_fn = if (g$LAI == "real") fn_real("LAI") else lai_mean,
-                           hmax_fn = if (g$Hmax == "real") fn_real("Hmax") else hmax_mean,
-                           fcover_fn = if (g$fCover == "real") fn_real("fCover") else fcover_mean,
-                           lad_fn = if (g$LAD == "real") make_lad_real else lad_mean_fn, grid_row = g)
+    g  <- grid[i, ]
+    nm <- sprintf("H1F_%s_%s_%s_%s",
+                  substr(g$LAI, 1, 1), substr(g$Hmax, 1, 1),
+                  substr(g$fCover, 1, 1), substr(g$LAD, 1, 1))
+    scenarios[[i]] <- list(
+      name      = nm,
+      lai_fn    = if (g$LAI    == "real")   fn_real("LAI")    else lai_mean,
+      hmax_fn   = if (g$Hmax   == "real")   fn_real("Hmax")   else hmax_mean,
+      fcover_fn = if (g$fCover == "real")   fn_real("fCover") else fcover_absent,
+      lad_fn    = if (g$LAD    == "real")   make_lad_real     else make_lad_uniform,
+      grid_row  = g
+    )
   }
   setNames(scenarios, vapply(scenarios, `[[`, "", "name"))
 }
@@ -523,12 +544,47 @@ scenarios_h1_factorial <- function(df_sample) {
 # SECTION 7.  MuSICA BATCH RUNNER
 # ==============================================================================
 
+#' Copie les sorties de scénarios existants (forward / LOO) vers le dossier
+#' factorial, évitant de relancer des simulations déjà disponibles.
+#'
+#' @param preload_map Vecteur nommé : name = nom factorial cible,
+#'   value = chemin du dossier source (forward ou LOO).
+#' @param out_dir     Dossier de sortie factorial (CFG$out_h1_factorial).
+#' @return Vecteur des noms factorial effectivement préchargés.
+preload_factorial_from_existing <- function(preload_map, out_dir) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  preloaded <- character(0)
+  for (nm in names(preload_map)) {
+    src <- preload_map[[nm]]
+    dst <- file.path(out_dir, nm)
+    if (dir.exists(dst)) {
+      cat(sprintf("  [factorial preload] %s — déjà présent, skip\n", nm))
+      preloaded <- c(preloaded, nm)
+    } else if (dir.exists(src)) {
+      ok <- file.copy(src, out_dir, recursive = TRUE)
+      if (ok) {
+        file.rename(file.path(out_dir, basename(src)), dst)
+        cat(sprintf("  [factorial preload] %s ← copié depuis %s\n", nm, basename(src)))
+        preloaded <- c(preloaded, nm)
+      } else {
+        cat(sprintf("  [factorial preload] ECHEC copie %s\n", nm))
+      }
+    } else {
+      cat(sprintf("  [factorial preload] %s — source absente (%s), sera simulé\n",
+                  nm, basename(src)))
+    }
+  }
+  preloaded
+}
+
 run_musica_one <- function(plot_row, scenario, out_nc_file, forcing_file, musica_cmd) {
   if (file.exists(out_nc_file)) return(invisible(out_nc_file))
-  lai <- scenario$lai_fn(plot_row); hmax <- scenario$hmax_fn(plot_row)
-  fcover <- scenario$fcover_fn(plot_row); allom <- scenario$lad_fn(plot_row)
+  lai    <- scenario$lai_fn(plot_row)
+  hmax   <- scenario$hmax_fn(plot_row)
+  fcover <- scenario$fcover_fn(plot_row)
   if (is.na(lai) || is.na(hmax) || is.na(fcover)) return(invisible(NULL))
-  
+  allom <- scenario$lad_fn(plot_row, hmax = hmax, lai = lai)
+
   phenology <- calc_phenology(list.year = c(2021, 2022), nleafage = 1, budburst_date = 115, leaf_age_max_in = 0.56, relative_age_firstmax = 0.10, relative_age_lastmax = 0.75, LAI_max_per_cohort = lai)
   tryCatch({
     callmusica(
@@ -875,9 +931,310 @@ plot_forward_curve <- function(df_scores, forward_order) {
     scale_x_continuous(breaks = seq_along(forward_order), labels = forward_order) + labs(title = "H1 forward — information added incrementally", x = NULL, y = "RMSE vs full-real reference (°C)") + theme(axis.text.x = element_text(angle = 25, hjust = 1))
 }
 
+#' Scatter plots ΔTmax scénario vs référence — un panneau par étape H1 forward.
+#'
+#' Demandé lors de la réunion du 17/04 : produire un scatter par paramètre
+#' (pas seulement pour le profil complet). Chaque panneau montre la relation
+#' entre le ΔTmax du scénario et celui de la référence full-real, avec R²,
+#' RMSE et biais annotés.
+#'
+#' @param df_all           Dataframe empilé (x, y, date, Delta_Tmax, scenario).
+#' @param ref_scenario_name Nom du scénario de référence (ex. "REF_all_real").
+#' @param forward_names    Vecteur ordonné des noms de scénarios H1 forward à
+#'   inclure (sans ref ni Null_baseline). Si NULL, tous sauf la référence.
+#' @param out_path         Chemin PNG de sortie.
+#' @return Invisible ggplot.
+plot_h1_scenario_scatters <- function(df_all, ref_scenario_name,
+                                       forward_names = NULL,
+                                       out_path = "outputs/h1/h1_scatters_vs_ref.png") {
+  # Noms lisibles pour les strips
+  label_map <- c(
+    H1f_1_LAI_only        = "+ LAI",
+    H1f_2_LAI_Hmax        = "+ Hmax",
+    H1f_3_LAI_Hmax_fCover = "+ fCover",
+    H1f_4_Full_real       = "+ Profil LAD"
+  )
+
+  df_ref <- df_all %>%
+    filter(scenario == ref_scenario_name) %>%
+    dplyr::select(x, y, date, Delta_ref = Delta_Tmax)
+
+  sc_names <- if (!is.null(forward_names)) forward_names else
+    setdiff(unique(df_all$scenario), c(ref_scenario_name, "H1f_0_Null_baseline"))
+
+  df_joined <- df_all %>%
+    filter(scenario %in% sc_names) %>%
+    inner_join(df_ref, by = c("x", "y", "date")) %>%
+    mutate(
+      scenario_lab = dplyr::recode(scenario, !!!label_map, .default = scenario),
+      scenario_lab = factor(scenario_lab, levels = label_map[label_map %in% unique(scenario_lab)])
+    )
+
+  lims <- range(c(df_joined$Delta_Tmax, df_joined$Delta_ref), na.rm = TRUE)
+  x_ann <- lims[1] + 0.05 * diff(lims)
+  y_ann <- lims[2] - 0.05 * diff(lims)
+
+  df_stats <- df_joined %>%
+    group_by(scenario_lab) %>%
+    summarise(
+      r2   = cor(Delta_Tmax, Delta_ref, use = "complete.obs")^2,
+      rmse = sqrt(mean((Delta_Tmax - Delta_ref)^2, na.rm = TRUE)),
+      bias = mean(Delta_Tmax - Delta_ref, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      label = sprintf("R\u00b2=%.2f\nRMSE=%.2f\u00b0C\nBias=%+.2f\u00b0C", r2, rmse, bias),
+      x_pos = x_ann, y_pos = y_ann
+    )
+
+  p <- ggplot(df_joined, aes(x = Delta_ref, y = Delta_Tmax)) +
+    geom_hex(bins = 60) +
+    scale_fill_gradient(low = "grey85", high = "midnightblue",
+                        trans = "log10", name = "Count\n(log)") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                colour = "black", linewidth = 0.8) +
+    geom_smooth(method = "lm", se = FALSE, colour = "#d73027", linewidth = 1.1) +
+    geom_text(
+      data = df_stats,
+      aes(x = x_pos, y = y_pos, label = label),
+      hjust = 0, vjust = 1, fontface = "bold", size = 3.2,
+      inherit.aes = FALSE
+    ) +
+    coord_fixed(xlim = lims, ylim = lims) +
+    facet_wrap(~ scenario_lab, nrow = 1) +
+    labs(
+      title    = "H1 \u2014 \u0394Tmax sc\u00e9nario vs r\u00e9f\u00e9rence (full-real), par param\u00e8tre",
+      subtitle = "Ajout progressif : LAI \u2192 Hmax \u2192 fCover \u2192 profil LAD complet",
+      x        = expression("R\u00e9f\u00e9rence (full-real)" ~ Delta * T[max] ~ (degree*C)),
+      y        = expression("Sc\u00e9nario" ~ Delta * T[max] ~ (degree*C))
+    ) +
+    theme_bw(base_size = 11) +
+    theme(legend.position  = "right",
+          strip.text       = element_text(face = "bold"),
+          plot.title       = element_text(face = "bold"))
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 16, height = 6)
+  cat(sprintf("  [h1_scatters] PNG : %s\n", out_path))
+  invisible(p)
+}
+
+#' Comparaison Forward vs LOO pour valider la robustesse du ranking des variables.
+#'
+#' Si l'ordre des barres Forward et LOO est cohérent (LAI > Hmax > fCover > profil
+#' LAD ou inverse), le ranking n'est pas un artefact de l'ordre d'insertion.
+#' Les deux scénarios LOO pour le profil LAD (uniform vs mean-shape) illustrent
+#' la sensibilité au choix de la baseline.
+#'
+#' @param df_scores     Dataframe issu de score_scenarios_vs_reference().
+#' @param forward_order Vecteur ordonné des noms de scénarios H1 forward.
+#' @param out_path      Chemin PNG de sortie.
+#' @return Invisible ggplot.
+compare_h1_rankings <- function(df_scores,
+                                 forward_order,
+                                 out_path = "outputs/h1/h1_ranking_comparison.png") {
+
+  fwd_labels <- c(
+    H1f_1_LAI_only        = "LAI",
+    H1f_2_LAI_Hmax        = "Hmax",
+    H1f_3_LAI_Hmax_fCover = "fCover",
+    H1f_4_Full_real       = "Profil LAD"
+  )
+  loo_labels <- c(
+    H1l_dropLAI_mean      = "LAI",
+    H1l_dropHmax_mean     = "Hmax",
+    H1l_dropfCover_mean   = "fCover",
+    H1l_dropLAD_uniform   = "Profil LAD",
+    H1l_dropLAD_meanShape = "Profil LAD"
+  )
+  loo_approach <- c(
+    H1l_dropLAI_mean      = "LOO",
+    H1l_dropHmax_mean     = "LOO",
+    H1l_dropfCover_mean   = "LOO",
+    H1l_dropLAD_uniform   = "LOO (base. uniforme)",
+    H1l_dropLAD_meanShape = "LOO (base. moy-forme)"
+  )
+  var_order <- c("LAI", "Hmax", "fCover", "Profil LAD")
+  metrics   <- c("rmse", "mae", "mean_diff")
+
+  # Forward: gain marginal à chaque étape (RMSE[k-1] - RMSE[k])
+  fwd_scs <- forward_order[forward_order %in% df_scores$scenario]
+  df_fwd_scores <- df_scores %>%
+    filter(scenario %in% fwd_scs) %>%
+    mutate(step = match(scenario, forward_order)) %>%
+    arrange(step)
+
+  df_fwd_long <- purrr::map_dfr(metrics, function(m) {
+    vals  <- setNames(df_fwd_scores[[m]], df_fwd_scores$scenario)
+    steps <- fwd_scs
+    purrr::map_dfr(seq_along(steps)[-1], function(i) {
+      tibble(variable = fwd_labels[steps[i]], approach = "Forward",
+             metric = m, delta = vals[steps[i - 1]] - vals[steps[i]])
+    })
+  }) %>% filter(!is.na(variable))
+
+  # LOO: perte marginale en retirant X de Full_real (RMSE[drop_X] - RMSE[Full])
+  loo_scs_present <- intersect(names(loo_labels), df_scores$scenario)
+  df_loo_long     <- tibble()
+  if (length(loo_scs_present) > 0) {
+    full_row <- df_scores %>% filter(scenario == "H1f_4_Full_real")
+    df_loo_long <- purrr::map_dfr(metrics, function(m) {
+      full_val <- if (nrow(full_row) > 0) full_row[[m]] else 0
+      df_scores %>%
+        filter(scenario %in% loo_scs_present) %>%
+        mutate(variable = loo_labels[scenario],
+               approach = loo_approach[scenario],
+               metric   = m,
+               delta    = !!sym(m) - full_val) %>%
+        dplyr::select(variable, approach, metric, delta)
+    })
+  }
+
+  approach_levels <- c("Forward", "LOO", "LOO (base. uniforme)", "LOO (base. moy-forme)")
+  approach_colors <- c(
+    "Forward"              = "#31688e",
+    "LOO"                  = "#d8576b",
+    "LOO (base. uniforme)" = "#f0a500",
+    "LOO (base. moy-forme)"= "#7b2d8b"
+  )
+  metric_labels <- c(
+    rmse      = "\u0394RMSE (\u00b0C)",
+    mae       = "\u0394MAE (\u00b0C)",
+    mean_diff = "\u0394Bias (\u00b0C, sign\u00e9)"
+  )
+
+  df_plot <- bind_rows(df_fwd_long, df_loo_long) %>%
+    mutate(
+      variable   = factor(variable, levels = var_order),
+      approach   = factor(approach, levels = approach_levels),
+      metric_lab = factor(metric_labels[metric], levels = metric_labels)
+    )
+
+  p <- ggplot(df_plot, aes(x = variable, y = delta, fill = approach)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+    geom_hline(yintercept = 0, linewidth = 0.4, colour = "grey40") +
+    scale_fill_manual(values = approach_colors, name = NULL, drop = TRUE) +
+    facet_wrap(~ metric_lab, scales = "free_y", ncol = 1) +
+    labs(
+      title    = "H1 \u2014 Robustesse du ranking : Forward vs LOO",
+      subtitle = "Concordance Forward/LOO = ranking ind\u00e9pendant de l\u2019ordre | 2 barres LOO pour Profil LAD = sensibilit\u00e9 \u00e0 la baseline",
+      x        = NULL,
+      y        = "R\u00e9duction d\u2019erreur (\u00b0C, positif = am\u00e9lioration)"
+    ) +
+    theme_bw(base_size = 11) +
+    theme(
+      axis.text.x     = element_text(angle = 20, hjust = 1),
+      strip.text      = element_text(face = "bold"),
+      plot.title      = element_text(face = "bold"),
+      legend.position = "top"
+    )
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 9, height = 12)
+  cat(sprintf("  [h1_rankings] PNG : %s\n", out_path))
+  invisible(p)
+}
+
+#' Scatter 2x2 : ΔTmax journalier LiDAR-réel (y) vs scénario avec une seule
+#' variable dégradée (x). Chaque panneau = une variable remplacée par sa valeur
+#' absente (LAI moyen, Hmax moyen, fCover=1, LAD uniforme).
+#'
+#' @param df_all  Dataframe empilé (x, y, date, Delta_Tmax, scenario).
+#' @param ref_scenario_name Scénario de référence "full real".
+#' @param out_path Chemin PNG de sortie.
+#' @return Invisible ggplot.
+plot_loo_scatters_2x2 <- function(df_all,
+                                   ref_scenario_name = "H1f_4_Full_real",
+                                   out_path = "outputs/h1/h1_loo_scatters_2x2.png") {
+  loo_map <- c(
+    H1l_dropLAI_mean    = "LAI \u2192 moyen",
+    H1l_dropHmax_mean   = "Hmax \u2192 moyen",
+    H1l_dropfCover_mean = "fCover \u2192 1",
+    H1l_dropLAD_uniform = "LAD \u2192 uniforme"
+  )
+  panel_order <- unname(loo_map)
+
+  df_ref <- df_all %>%
+    filter(scenario == ref_scenario_name) %>%
+    dplyr::select(x, y, date, Delta_real = Delta_Tmax)
+
+  loo_scs <- intersect(names(loo_map), unique(df_all$scenario))
+  if (length(loo_scs) == 0) {
+    warning("[plot_loo_scatters_2x2] aucun scénario LOO trouvé dans df_all")
+    return(invisible(NULL))
+  }
+
+  df_joined <- df_all %>%
+    filter(scenario %in% loo_scs) %>%
+    inner_join(df_ref, by = c("x", "y", "date")) %>%
+    mutate(panel = factor(loo_map[scenario], levels = panel_order))
+
+  lims <- range(c(df_joined$Delta_Tmax, df_joined$Delta_real), na.rm = TRUE)
+  x_ann <- lims[1] + 0.05 * diff(lims)
+  y_ann <- lims[2] - 0.05 * diff(lims)
+
+  df_stats <- df_joined %>%
+    group_by(panel) %>%
+    summarise(
+      r2   = cor(Delta_Tmax, Delta_real, use = "complete.obs")^2,
+      rmse = sqrt(mean((Delta_Tmax - Delta_real)^2, na.rm = TRUE)),
+      bias = mean(Delta_Tmax - Delta_real, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      label = sprintf("R\u00b2=%.2f\nRMSE=%.2f\u00b0C\nBias=%+.2f\u00b0C",
+                      r2, rmse, bias),
+      x_pos = x_ann, y_pos = y_ann
+    )
+
+  p <- ggplot(df_joined, aes(x = Delta_Tmax, y = Delta_real)) +
+    geom_hex(bins = 50) +
+    scale_fill_gradient(low = "grey88", high = "midnightblue",
+                        trans = "log10", name = "N (log)") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                colour = "black", linewidth = 0.7) +
+    geom_smooth(method = "lm", se = FALSE, colour = "#d73027", linewidth = 1) +
+    geom_text(data = df_stats,
+              aes(x = x_pos, y = y_pos, label = label),
+              hjust = 0, vjust = 1, size = 3, fontface = "bold",
+              inherit.aes = FALSE) +
+    coord_fixed(xlim = lims, ylim = lims) +
+    facet_wrap(~ panel, nrow = 2, ncol = 2) +
+    labs(
+      title    = "Impact d\u2019une variable structurelle — \u0394Tmax journalier",
+      subtitle = "x = sc\u00e9nario avec une variable d\u00e9grad\u00e9e | y = LiDAR r\u00e9el (Full-real)",
+      x        = expression(Delta * T[max] ~ "sc\u00e9nario d\u00e9grad\u00e9 (\u00b0C)"),
+      y        = expression(Delta * T[max] ~ "LiDAR r\u00e9el (\u00b0C)")
+    ) +
+    theme_bw(base_size = 11) +
+    theme(strip.text      = element_text(face = "bold"),
+          plot.title      = element_text(face = "bold"),
+          legend.position = "right")
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 10, height = 10)
+  cat(sprintf("  [loo_scatters_2x2] PNG : %s\n", out_path))
+  invisible(p)
+}
+
 # ==============================================================================
 # SECTION 11.  SHAPE METRICS (FPCA & Height of Median LAI)
 # ==============================================================================
+
+#' Sélection automatique du nombre de FPCs à inclure dans le clustering / cLHS.
+#'
+#' Critère : gain marginal de variance expliquée par FPC_k. On inclut FPC_k
+#' tant que varprop[k] > min_marginal. Si le gain chute sous ce seuil, les
+#' composantes suivantes n'apportent pas assez d'information pour justifier
+#' la contrainte supplémentaire sur le cLHS.
+#'
+#' @param varprop     Vecteur de proportions de variance (issu de fpca$varprop).
+#' @param min_marginal Seuil de gain marginal minimal (défaut 0.05 = 5 %).
+#' @return Entier : nombre de FPCs à retenir (au moins 1).
+select_n_fpc <- function(varprop, min_marginal = 0.05) {
+  n <- sum(varprop >= min_marginal)
+  max(1L, n)
+}
 
 optimise_nbasis <- function(arg_vals, mat_lad_norm, nbasis_range = 4:15) {
   gcv <- vapply(nbasis_range, function(nb) {
@@ -1338,6 +1695,7 @@ extract_vertical_tmax_profile <- function(nc_file, date_seq,
     ) %>%
     filter(date %in% date_seq) %>%
     group_by(nair, date) %>%
+    # Tmax pris indépendamment à chaque couche (pas ancré à l'heure du Tmax global)
     summarise(Tmax_daily = max(Tair_sim, na.rm = TRUE), .groups = "drop")
 
   # Résumé selon le mode demandé
@@ -1768,6 +2126,178 @@ plot_vertical_tmax_profiles <- function(df_sample, real_lad_dir,
   invisible(list(plot = p, data = df_profiles, medians = medians))
 }
 
+#' Extraire le profil vertical de ΔTmax selon deux méthodes de définition du Tmax.
+#'
+#' Méthode 1 — indépendant : Tmax(z) = max_t(Tair_z(t)) par couche, puis ΔTmax(z) - Tmax_ERA5.
+#' Méthode 2 — heure globale : t* = heure où la couche supérieure atteint son Tmax,
+#'   puis ΔTmax(z) = T(z, t*) - Tmax_ERA5.
+#' Retourne la moyenne sur toutes les dates de date_seq.
+#'
+#' @param nc_file  Chemin NetCDF.
+#' @param df_macro Dataframe avec colonnes date et Tmax_macro (ERA5).
+#' @param date_seq Dates de la période d'intérêt.
+#' @return Tibble (height_m, nair, Delta_Tmax_mean, method) ou NULL.
+extract_vertical_delta_both_methods <- function(nc_file, df_macro, date_seq) {
+  if (is.na(nc_file) || !file.exists(nc_file)) return(NULL)
+
+  nc <- try(nc_open(nc_file), silent = TRUE)
+  if (inherits(nc, "try-error")) return(NULL)
+  rel_h <- try(ncvar_get(nc, "relative_height"), silent = TRUE)
+  h_top <- try(ncvar_get(nc, "veget_height_top"), silent = TRUE)
+  raw   <- try(get_variable(nc, "Tair_z"), silent = TRUE)
+  nc_close(nc)
+  if (inherits(raw, "try-error") || is.null(raw)) return(NULL)
+
+  hmax_nc <- if (!inherits(h_top, "try-error")) h_top[1] else NA_real_
+
+  df_hourly <- raw %>%
+    mutate(Tair_C = Tair_z - 273.15,
+           time   = time - lubridate::hours(2),
+           date   = as.Date(time)) %>%
+    filter(date %in% date_seq) %>%
+    inner_join(df_macro %>% dplyr::select(date, Tmax_macro), by = "date")
+
+  top_nair <- max(df_hourly$nair, na.rm = TRUE)
+
+  # Méthode 1 : Tmax indépendant par couche
+  m1 <- df_hourly %>%
+    group_by(nair, date, Tmax_macro) %>%
+    summarise(Tmax_z = max(Tair_C, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Delta = Tmax_z - Tmax_macro,
+           method = "Ind\u00e9pendant par couche")
+
+  # Méthode 2 : profil à l'heure du Tmax de la couche supérieure
+  peak_times <- df_hourly %>%
+    filter(nair == top_nair) %>%
+    group_by(date) %>%
+    slice_max(Tair_C, n = 1, with_ties = FALSE) %>%
+    dplyr::select(date, peak_time = time)
+
+  m2 <- df_hourly %>%
+    inner_join(peak_times, by = c("date", "time" = "peak_time")) %>%
+    group_by(nair, date, Tmax_macro) %>%
+    summarise(Tmax_z = first(Tair_C), .groups = "drop") %>%
+    mutate(Delta = Tmax_z - Tmax_macro,
+           method = "Heure du Tmax global")
+
+  df_out <- bind_rows(m1, m2) %>%
+    group_by(nair, method) %>%
+    summarise(Delta_Tmax_mean = mean(Delta, na.rm = TRUE), .groups = "drop")
+
+  if (!inherits(rel_h, "try-error") && !is.na(hmax_nc)) {
+    df_out$height_m <- rel_h[df_out$nair] * hmax_nc
+  } else {
+    n_lay <- max(df_out$nair)
+    df_out$height_m <- seq(0, hmax_nc, length.out = n_lay)[df_out$nair]
+  }
+
+  df_out
+}
+
+#' Profils verticaux de ΔTmax par cluster — comparaison des deux méthodes Tmax.
+#'
+#' Pour le plot médian de chaque cluster, trace le profil moyen de ΔTmax(z)
+#' (ΔTmax = Tmax_couche - Tmax_ERA5) selon deux méthodes de construction.
+#' Facets = clusters, couleur/type = méthode.
+#'
+#' @param df_sample    cLHS avec Cluster.
+#' @param real_lad_dir Dossier NetCDF du scénario full-real (H1f_4_Full_real ou REF).
+#' @param df_macro     Dataframe ERA5 avec date et Tmax_macro.
+#' @param date_seq     Dates de la période.
+#' @param out_path     Chemin PNG de sortie.
+#' @return Invisible list(plot, data).
+plot_vertical_delta_by_cluster <- function(df_sample,
+                                            real_lad_dir,
+                                            df_macro,
+                                            date_seq,
+                                            out_path = "outputs/h2/h2_vertical_delta_by_cluster.png") {
+  if (!"Cluster" %in% names(df_sample)) {
+    warning("[plot_vertical_delta_by_cluster] colonne 'Cluster' absente — abandon.")
+    return(invisible(NULL))
+  }
+
+  medians <- select_cluster_median_plots(df_sample)
+  if (is.null(medians) || nrow(medians) == 0) return(invisible(NULL))
+
+  find_nc <- function(dir, x, y) {
+    pat  <- sprintf("X%d_Y%d", round(x), round(y))
+    hits <- list.files(dir, pattern = pat, full.names = TRUE)
+    if (length(hits) == 0) NA_character_ else hits[1]
+  }
+
+  df_profiles <- medians %>%
+    rowwise() %>%
+    mutate(nc = find_nc(real_lad_dir, x, y)) %>%
+    ungroup() %>%
+    filter(!is.na(nc)) %>%
+    purrr::pmap_dfr(function(Cluster, x, y, LAI, Hmax, plot_id, nc, ...) {
+      prof <- extract_vertical_delta_both_methods(nc, df_macro, date_seq)
+      if (is.null(prof)) return(NULL)
+      prof %>% mutate(Cluster  = as.character(Cluster),
+                      plot_id  = plot_id,
+                      Hmax_plot = Hmax,
+                      LAI_plot  = LAI)
+    })
+
+  if (is.null(df_profiles) || nrow(df_profiles) == 0) {
+    warning("[plot_vertical_delta_by_cluster] aucun profil extrait — abandon.")
+    return(invisible(NULL))
+  }
+
+  df_profiles <- df_profiles %>%
+    mutate(
+      method      = factor(method, levels = c("Ind\u00e9pendant par couche",
+                                              "Heure du Tmax global")),
+      panel_label = sprintf("Cluster %s\nHmax=%.1fm | LAI=%.1f",
+                            Cluster, Hmax_plot, LAI_plot)
+    )
+
+  df_hmax <- df_profiles %>%
+    group_by(panel_label) %>%
+    summarise(Hmax = first(Hmax_plot), .groups = "drop")
+
+  x_lims <- range(df_profiles$Delta_Tmax_mean, na.rm = TRUE)
+
+  p <- ggplot(df_profiles,
+              aes(x = Delta_Tmax_mean, y = height_m,
+                  colour = method, linetype = method)) +
+    geom_path(linewidth = 1.1) +
+    geom_point(size = 1.8) +
+    geom_vline(xintercept = 0, linetype = "dotted",
+               colour = "grey50", linewidth = 0.6) +
+    geom_hline(data = df_hmax, aes(yintercept = Hmax),
+               linetype = "dashed", colour = "firebrick",
+               linewidth = 0.8, inherit.aes = FALSE) +
+    scale_colour_manual(
+      values   = c("Ind\u00e9pendant par couche" = "#31688e",
+                   "Heure du Tmax global"       = "#d8576b"),
+      name     = "M\u00e9thode Tmax"
+    ) +
+    scale_linetype_manual(
+      values   = c("Ind\u00e9pendant par couche" = "solid",
+                   "Heure du Tmax global"       = "dashed"),
+      name     = "M\u00e9thode Tmax"
+    ) +
+    facet_wrap(~ panel_label, nrow = 1, scales = "free_x") +
+    labs(
+      title    = "Profils verticaux de \u0394Tmax par cluster \u2014 comparaison des deux m\u00e9thodes",
+      subtitle = "Bleu = Tmax ind\u00e9pendant par couche | Rouge = profil \u00e0 l\u2019heure du Tmax de la couche sup\u00e9rieure\nTiret rouge horizontal = hauteur de canop\u00e9e | \u0394Tmax = Tmax(couche) \u2212 Tmax ERA5",
+      x        = expression(mean ~ Delta * T[max] ~ "moyen \u00e9t\u00e9" ~ (degree*C)),
+      y        = "Hauteur (m)"
+    ) +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "bottom",
+          strip.text      = element_text(face = "bold"),
+          plot.title      = element_text(face = "bold"))
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(p, out_path, width = 14, height = 7)
+  csv_path <- sub("\\.png$", ".csv", out_path)
+  write.csv(df_profiles, csv_path, row.names = FALSE)
+  cat(sprintf("  [delta_cluster_profiles] PNG : %s\n", out_path))
+  invisible(list(plot = p, data = df_profiles))
+}
+
 #' Profils verticaux Tmax multi-scénarios — figure triptyque comparatif.
 #'
 #' Variante de plot_vertical_tmax_profiles() qui accepte une liste nommée
@@ -1881,26 +2411,32 @@ main <- function() {
   rasters <- load_lidar_rasters(CFG$in_dir, CFG$agg_factor)
 
   cat("[2/7] Building forest dataframe...\n")
-  fd      <- build_forest_dataframe(rasters$stack)
-  cl_res  <- label_clusters(fd$df, k = CFG$k_clusters)
-  df_forest <- cl_res$df
-  if (!is.null(cl_res$elbow_plot)) {
-    save_plot(cl_res$elbow_plot, "outputs/clusters/kmeans_elbow.png", width = 8, height = 5)
-    print(cl_res$elbow_plot)
-  }
-
+  fd       <- build_forest_dataframe(rasters$stack)
   df_macro <- extract_macro_daily(CFG$forcing_file, CFG$date_seq)
 
-  # ---- 2b. FPCA sur la forêt ENTIÈRE (avant échantillonnage) -----------------
-  cat("[2b] FPCA sur la forêt entière (avant cLHS)...\n")
-  fpca_res <- compute_fpca(fd$mat_lad, fd$df$Hmax, fd$z_breaks)
-  fpc_var  <- fpca_res$varprop
+  # ---- 2b. FPCA sur la forêt ENTIÈRE (avant clustering et cLHS) --------------
+  # Ordre intentionnel : FPCA → clustering → cLHS, pour que FPC1/FPC2 stratifient
+  # à la fois les clusters et l'échantillon (les scalaires seuls ne capturent pas
+  # la forme verticale du profil LAD).
+  cat("[2b] FPCA sur la forêt entière (avant clustering)...\n")
+  fpca_res <- compute_fpca(fd$mat_lad, fd$df$Hmax, fd$z_breaks, n_harm = CFG$n_fpc_total)
+  fpc_var   <- fpca_res$varprop
+  n_fpc_sel <- select_n_fpc(fpc_var, min_marginal = CFG$fpc_min_marginal)
   cat(sprintf("    FPC variance (forêt entière) : %s\n",
               paste(round(100 * fpc_var, 1), collapse = " / ")))
+  cat(sprintf("    FPCs retenus pour clustering/cLHS : %d (seuil gain >= %.0f%%)\n",
+              n_fpc_sel, 100 * CFG$fpc_min_marginal))
 
-  writeLines(sprintf("FPC1: %.1f%%\nFPC2: %.1f%%\nFPC3: %.1f%%",
-                     100 * fpc_var[1], 100 * fpc_var[2], 100 * fpc_var[3]),
-             "outputs/fpca/fpca_variance.txt")
+  writeLines(
+    c(sprintf("n_fpc_total: %d | n_fpc_selected: %d (min_marginal: %.0f%%)",
+              CFG$n_fpc_total, n_fpc_sel, 100 * CFG$fpc_min_marginal),
+      sprintf("FPC%d: %.1f%% (cumul %.1f%%) %s",
+              seq_along(fpc_var),
+              100 * fpc_var,
+              100 * cumsum(fpc_var),
+              ifelse(seq_along(fpc_var) <= n_fpc_sel, "<-- retenu", ""))),
+    "outputs/fpca/fpca_variance.txt"
+  )
 
   save_plot(fpca_res$gcv_plot, "outputs/fpca/fpca_gcv_curve.png", width = 8, height = 5)
   print(fpca_res$gcv_plot)
@@ -1912,6 +2448,21 @@ main <- function() {
   p_fpca_load <- plot_fpc_loadings(fpca_res)
   save_plot(p_fpca_load, "outputs/fpca/fpca_loadings.png", width = 10, height = 5)
   print(p_fpca_load)
+
+  # Ajout des scores FPC1…FPC_n_fpc_sel à df_forest avant clustering et cLHS
+  fpc_col_names <- paste0("FPC", seq_len(n_fpc_sel))
+  fpc_mat       <- fpca_res$fpca$scores[, seq_len(n_fpc_sel), drop = FALSE]
+  colnames(fpc_mat) <- fpc_col_names
+  df_forest_raw <- fd$df %>% bind_cols(as.data.frame(fpc_mat))
+
+  # ---- 2c. Clustering (LAI, Hmax, fCover, FPC1, …, FPC_n) -------------------
+  cluster_vars <- c("LAI", "Hmax", "fCover", fpc_col_names)
+  cl_res    <- label_clusters(df_forest_raw, k = CFG$k_clusters, vars = cluster_vars)
+  df_forest <- cl_res$df
+  if (!is.null(cl_res$elbow_plot)) {
+    save_plot(cl_res$elbow_plot, "outputs/clusters/kmeans_elbow.png", width = 8, height = 5)
+    print(cl_res$elbow_plot)
+  }
 
   p_fpca_scat <- plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster)
   save_plot(p_fpca_scat, "outputs/fpca/fpca_scatters.png", width = 12, height = 5)
@@ -1929,26 +2480,24 @@ main <- function() {
   save_plot(p_clust_prof, "outputs/clusters/cluster_mean_profiles.png", width = 12, height = 6)
   print(p_clust_prof)
 
-  # ---- 3. cLHS sampling -------------------------------------------------------
+  # ---- 3. cLHS sampling (LAI, Hmax, fCover, FPC1, FPC2) ---------------------
   if (FLAGS$RUN_CLHS) {
     cat("[3/7] cLHS sampling...\n")
-    df_sample <- sample_clhs_per_cluster(df_forest, CFG$n_per_cluster)
+    df_sample <- sample_clhs_per_cluster(df_forest, CFG$n_per_cluster,
+                                          vars = cluster_vars)
     saveRDS(df_sample, file.path(CFG$out_dir, "clhs_sample.rds"))
   } else {
     df_sample <- readRDS(file.path(CFG$out_dir, "clhs_sample.rds"))
-    # Compatibilité : RDS anciens contiennent "Archetype" au lieu de "Cluster"
     if ("Archetype" %in% names(df_sample) && !"Cluster" %in% names(df_sample)) {
       df_sample <- df_sample %>% rename(Cluster = Archetype)
     }
   }
   cat(sprintf("    sample size: %d plots\n", nrow(df_sample)))
 
-  # Projection des scores FPCA (forêt entière) sur le sous-ensemble cLHS.
-  # Les scores sont alignés ligne-à-ligne avec fd$df / df_forest ; on retrouve
-  # les indices par correspondance (x, y).
-  idx_sample       <- match(paste(df_sample$x, df_sample$y),
-                            paste(df_forest$x, df_forest$y))
-  fpc_scores_sample <- fpca_res$fpca$scores[idx_sample, 1:3]
+  # Scores FPC sur l'échantillon — récupérés depuis df_forest (déjà calculés).
+  idx_sample        <- match(paste(df_sample$x, df_sample$y),
+                             paste(df_forest$x, df_forest$y))
+  fpc_scores_sample <- fpca_res$fpca$scores[idx_sample, seq_len(CFG$n_fpc_total), drop = FALSE]
   
   ref_sc <- scenario_reference(df_sample)
   
@@ -2044,6 +2593,16 @@ main <- function() {
         out_dir         = "outputs/h2"
       )
 
+      # ---- ΔTmax vertical par cluster — comparaison 2 méthodes Tmax ------------
+      cat("[vertical] \u0394Tmax vertical par cluster (ind\u00e9pendant vs heure globale)...\n")
+      plot_vertical_delta_by_cluster(
+        df_sample,
+        real_lad_dir = file.path(CFG$out_h2, "H2_real_LAD"),
+        df_macro     = df_macro,
+        date_seq     = CFG$date_seq,
+        out_path     = "outputs/h2/h2_vertical_delta_by_cluster.png"
+      )
+
       # ---- Profils 3 scénarios (Real / Cluster-type / Uniform) ----------------
       cat("[vertical] Profils verticaux 3 scénarios H2 (canicule)...\n")
       plot_vertical_tmax_profiles_multi(
@@ -2111,6 +2670,23 @@ main <- function() {
   if (FLAGS$RUN_H1_FORWARD) {
     cat("[5a/7] H1 forward inclusion...\n")
     fw_scs <- scenarios_h1_forward(df_sample)
+
+    # Traçabilité des valeurs SC0 (LAI et Hmax moyens de l'échantillon cLHS)
+    sc0_params <- data.frame(
+      variable = c("LAI_mean", "Hmax_mean", "fCover_absent", "LAD_absent"),
+      valeur   = c(mean(df_sample$LAI, na.rm = TRUE),
+                   round(mean(floor(df_sample$Hmax) + 1, na.rm = TRUE)),
+                   1,
+                   NA_real_),
+      note     = c("moyenne échantillon cLHS",
+                   "moyenne échantillon cLHS",
+                   "canopée fermée homogène (pas de clumping)",
+                   "profil uniforme 1 m → Hmax, densité = LAI_plot / depth")
+    )
+    dir.create("outputs/h1", recursive = TRUE, showWarnings = FALSE)
+    write.csv(sc0_params, "outputs/h1/h1_sc0_baseline_params.csv", row.names = FALSE)
+    cat(sprintf("  [SC0] LAI_mean=%.3f  Hmax_mean=%.2f m  fCover=1  LAD=uniforme\n",
+                sc0_params$valeur[1], sc0_params$valeur[2]))
     scenario_paths <- c(scenario_paths,
       run_scenarios(df_sample, fw_scs, CFG$out_h1_forward,
                     skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS))
@@ -2125,6 +2701,22 @@ main <- function() {
   if (FLAGS$RUN_H1_FACTORIAL) {
     cat("[5c/7] H1 full factorial (HEAVY)...\n")
     fac_scs <- scenarios_h1_factorial(df_sample)
+
+    # Préchargement : 8 scénarios factorial ont un équivalent exact dans
+    # forward / LOO (même combinaison de variables réelles/moyennes/uniform).
+    # On les copie pour éviter ~2400 simulations redondantes.
+    factorial_preload_map <- c(
+      H1F_m_m_m_u = file.path(CFG$out_h1_forward, "H1f_0_Null_baseline"),
+      H1F_r_m_m_u = file.path(CFG$out_h1_forward, "H1f_1_LAI_only"),
+      H1F_r_r_m_u = file.path(CFG$out_h1_forward, "H1f_2_LAI_Hmax"),
+      H1F_r_r_r_u = file.path(CFG$out_h1_forward, "H1f_3_LAI_Hmax_fCover"),
+      H1F_r_r_r_r = file.path(CFG$out_h1_forward, "H1f_4_Full_real"),
+      H1F_m_r_r_r = file.path(CFG$out_h1_loo,     "H1l_dropLAI_mean"),
+      H1F_r_m_r_r = file.path(CFG$out_h1_loo,     "H1l_dropHmax_mean"),
+      H1F_r_r_m_r = file.path(CFG$out_h1_loo,     "H1l_dropfCover_mean")
+    )
+    preload_factorial_from_existing(factorial_preload_map, CFG$out_h1_factorial)
+
     scenario_paths <- c(scenario_paths,
       run_scenarios(df_sample, fac_scs, CFG$out_h1_factorial,
                     skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS))
@@ -2144,8 +2736,36 @@ main <- function() {
     p_h1_fwd <- plot_forward_curve(df_scores, forward_order)
     save_plot(p_h1_fwd, "outputs/h1/h1_forward_curve.png")
     print(p_h1_fwd)
+
+    # Scatter par paramètre (demandé réunion 17/04) — exclut Null_baseline et ref
+    forward_sc_names <- setdiff(forward_order, "H1f_0_Null_baseline")
+    p_h1_sc <- plot_h1_scenario_scatters(
+      df_all_scenarios,
+      ref_scenario_name = ref_sc$name,
+      forward_names     = forward_sc_names,
+      out_path          = "outputs/h1/h1_scatters_vs_ref.png"
+    )
+    print(p_h1_sc)
+
+    # Comparaison Forward vs LOO — robustesse du ranking des variables
+    p_h1_rank <- compare_h1_rankings(
+      df_scores,
+      forward_order = forward_order,
+      out_path      = "outputs/h1/h1_ranking_comparison.png"
+    )
+    print(p_h1_rank)
   }
-  
+
+  if (FLAGS$RUN_H1_LOO) {
+    # Scatter 2x2 : une variable dégradée à la fois vs LiDAR réel
+    p_loo_2x2 <- plot_loo_scatters_2x2(
+      df_all_scenarios,
+      ref_scenario_name = ref_sc$name,
+      out_path          = "outputs/h1/h1_loo_scatters_2x2.png"
+    )
+    print(p_loo_2x2)
+  }
+
   # ---- 6. GAMM emulator -----------------------------------------------------
   if (FLAGS$RUN_GAMM_EMULATOR) {
     cat("[6/7] GAMM emulator on reference scenario...\n")
