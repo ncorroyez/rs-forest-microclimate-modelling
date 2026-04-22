@@ -330,27 +330,48 @@ plot_cluster_mean_profiles <- function(df_forest, mat_rel, z_rel) {
   #           compute_fpca). Chaque profil est interpolé sur z_rel ∈ [0,1],
   #           ce qui évite le biais des zéros au-dessus du Hmax de chaque plot.
   valid    <- !is.na(df_forest$Cluster)
-  clusters <- levels(df_forest$Cluster[valid])
+  clusters <- if (is.factor(df_forest$Cluster)) levels(droplevels(df_forest$Cluster[valid]))
+              else sort(unique(as.character(df_forest$Cluster[valid])))
 
   df_profiles <- lapply(clusters, function(cl) {
-    idx       <- which(df_forest$Cluster == cl & valid)
-    mean_prof <- colMeans(mat_rel[idx, , drop = FALSE], na.rm = TRUE)
-    data.frame(rel_z = z_rel, density = mean_prof, Cluster = cl, n = length(idx))
+    idx  <- which(df_forest$Cluster == cl & valid)
+    mat  <- mat_rel[idx, , drop = FALSE]
+    q25  <- apply(mat, 2, quantile, 0.25, na.rm = TRUE)
+    q75  <- apply(mat, 2, quantile, 0.75, na.rm = TRUE)
+    data.frame(
+      rel_z   = z_rel,
+      density = colMeans(mat, na.rm = TRUE),
+      q25     = q25,
+      q75     = q75,
+      Cluster = cl,
+      n       = length(idx),
+      Hmax_mean = round(mean(df_forest$Hmax[idx], na.rm = TRUE), 1),
+      LAI_mean  = round(mean(df_forest$LAI[idx],  na.rm = TRUE), 2)
+    )
   })
   df_profiles <- bind_rows(df_profiles) %>%
-    mutate(label = sprintf("Cluster %s\n(n = %d)", Cluster, n))
+    mutate(label = sprintf("Cluster %s  (n=%d)\nHmax=%.1fm | LAI=%.2f",
+                           Cluster, n, Hmax_mean, LAI_mean))
 
-  ggplot(df_profiles, aes(x = density, y = rel_z, colour = Cluster)) +
-    geom_path(linewidth = 1.2) +
+  ggplot(df_profiles, aes(x = density, y = rel_z, colour = Cluster, fill = Cluster)) +
+    geom_ribbon(aes(xmin = q25, xmax = q75), alpha = 0.15, colour = NA) +
+    geom_path(linewidth = 1.3) +
+    geom_hline(yintercept = 1, linetype = "dashed", colour = "firebrick",
+               linewidth = 0.7) +
+    annotate("text", x = Inf, y = 1, label = "Hmax moyen",
+             hjust = 1.05, vjust = -0.4, colour = "firebrick", size = 3) +
     facet_wrap(~ label, nrow = 1) +
-    scale_colour_viridis_d(option = "turbo") +
+    scale_colour_viridis_d(option = "turbo", end = 0.85) +
+    scale_fill_viridis_d(option = "turbo",   end = 0.85) +
     labs(
       title    = "Profil LAD moyen par cluster \u2014 base d\u2019interpr\u00e9tation typologique",
-      subtitle = "Moyenn\u00e9 en hauteur relative (z/Hmax) \u2014 nommer chaque profil (bottom-heavy, top-heavy\u2026)",
-      x        = "LAD normalis\u00e9 (relatif)",
+      subtitle = "Hauteur relative (z/Hmax) | Ruban = IQR | Tiret = z/Hmax = 1 (sommet de la can\u00f6pe\u00e9)",
+      x        = expression("LAD moyen" ~ (m^2 ~ m^{-3})),
       y        = "Hauteur relative (z / Hmax)"
     ) +
-    theme(legend.position = "none")
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none",
+          strip.text      = element_text(face = "bold"))
 }
 
 # ==============================================================================
@@ -2706,14 +2727,14 @@ main <- function() {
     # forward / LOO (même combinaison de variables réelles/moyennes/uniform).
     # On les copie pour éviter ~2400 simulations redondantes.
     factorial_preload_map <- c(
-      H1F_m_m_m_u = file.path(CFG$out_h1_forward, "H1f_0_Null_baseline"),
-      H1F_r_m_m_u = file.path(CFG$out_h1_forward, "H1f_1_LAI_only"),
-      H1F_r_r_m_u = file.path(CFG$out_h1_forward, "H1f_2_LAI_Hmax"),
+      H1F_m_m_a_u = file.path(CFG$out_h1_forward, "H1f_0_Null_baseline"),
+      H1F_r_m_a_u = file.path(CFG$out_h1_forward, "H1f_1_LAI_only"),
+      H1F_r_r_a_u = file.path(CFG$out_h1_forward, "H1f_2_LAI_Hmax"),
       H1F_r_r_r_u = file.path(CFG$out_h1_forward, "H1f_3_LAI_Hmax_fCover"),
       H1F_r_r_r_r = file.path(CFG$out_h1_forward, "H1f_4_Full_real"),
       H1F_m_r_r_r = file.path(CFG$out_h1_loo,     "H1l_dropLAI_mean"),
       H1F_r_m_r_r = file.path(CFG$out_h1_loo,     "H1l_dropHmax_mean"),
-      H1F_r_r_m_r = file.path(CFG$out_h1_loo,     "H1l_dropfCover_mean")
+      H1F_r_r_a_r = file.path(CFG$out_h1_loo,     "H1l_dropfCover_mean")
     )
     preload_factorial_from_existing(factorial_preload_map, CFG$out_h1_factorial)
 
