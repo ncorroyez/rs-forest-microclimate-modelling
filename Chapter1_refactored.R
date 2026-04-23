@@ -1247,6 +1247,189 @@ plot_loo_scatters_2x2 <- function(df_all,
 }
 
 # ==============================================================================
+# SECTION 10b.  SHAPLEY ATTRIBUTION — exact computation on 2^4 lattice
+# ==============================================================================
+
+extract_shapley_coalitions <- function(df_scores) {
+  coalition_to_scenario <- c(
+    "0000" = "H1F_m_m_a_u", "1000" = "H1F_r_m_a_u",
+    "0100" = "H1F_m_r_a_u", "0010" = "H1F_m_m_r_u",
+    "0001" = "H1F_m_m_a_r", "1100" = "H1F_r_r_a_u",
+    "1010" = "H1F_r_m_r_u", "1001" = "H1F_r_m_a_r",
+    "0110" = "H1F_m_r_r_u", "0101" = "H1F_m_r_a_r",
+    "0011" = "H1F_m_m_r_r", "1110" = "H1F_r_r_r_u",
+    "1101" = "H1F_r_r_a_r", "1011" = "H1F_r_m_r_r",
+    "0111" = "H1F_m_r_r_r", "1111" = "H1F_r_r_r_r"
+  )
+  rmse_values <- sapply(coalition_to_scenario, function(sc) {
+    val <- df_scores$rmse[df_scores$scenario == sc]
+    if (length(val) == 0) {
+      warning(sprintf("Scenario manquant pour treillis Shapley : %s", sc))
+      return(NA_real_)
+    }
+    val[1]
+  })
+  names(rmse_values) <- names(coalition_to_scenario)
+  if (any(is.na(rmse_values)))
+    stop("Treillis Shapley incomplet : certains scenarios factorial manquent.")
+  rmse_values
+}
+
+compute_shapley_exact <- function(rmse_values) {
+  v_empty <- as.numeric(rmse_values["0000"])
+  v <- function(b) v_empty - as.numeric(rmse_values[b])
+
+  make_bin <- function(bits_on, n = 4) {
+    b <- rep("0", n); b[bits_on] <- "1"; paste(b, collapse = "")
+  }
+  variables <- c("LAI", "Hmax", "fCover", "LAD")
+
+  shapley_vals <- sapply(seq_along(variables), function(var_bit) {
+    others <- setdiff(seq_len(4), var_bit)
+    total  <- 0
+    for (s in 0:3) {
+      subsets <- if (s == 0) list(integer(0)) else combn(others, s, simplify = FALSE)
+      w <- factorial(s) * factorial(4 - s - 1) / factorial(4)
+      for (S in subsets)
+        total <- total + w * (v(make_bin(c(S, var_bit))) - v(make_bin(S)))
+    }
+    total
+  })
+  names(shapley_vals) <- variables
+
+  total_shapley <- sum(shapley_vals)
+  total_effect  <- v("1111")
+
+  cat("\u2500\u2500 Valeurs Shapley exactes \u2500\u2500\n")
+  for (i in seq_along(variables))
+    cat(sprintf("  phi(%-6s) = %+.4f \u00b0C  (%+.1f%% de v(N))\n",
+                variables[i], shapley_vals[i],
+                100 * shapley_vals[i] / total_effect))
+  cat(sprintf("\n  Somme phi = %+.4f  |  v(N) = %+.4f  |  \u00e9cart = %.2e\n\n",
+              total_shapley, total_effect, abs(total_shapley - total_effect)))
+
+  list(shapley = shapley_vals, rmse_values = rmse_values,
+       v_empty = v_empty, total_effect = total_effect,
+       total_sum = total_shapley, check_diff = abs(total_shapley - total_effect))
+}
+
+plot_shapley_attribution <- function(shap_res, df_scores,
+                                     out_path = "outputs/figures/02_shapley_attribution.png") {
+  variables <- c("LAI", "Hmax", "fCover", "LAD")
+  var_order <- c("LAI", "fCover", "Hmax", "LAD")
+  rv        <- shap_res$rmse_values
+
+  forward_gain <- c(
+    LAI    = rv["0000"] - rv["1000"], Hmax   = rv["1000"] - rv["1100"],
+    fCover = rv["1100"] - rv["1110"], LAD    = rv["1110"] - rv["1111"]
+  )
+  loo_loss <- c(
+    LAI    = rv["0111"] - rv["1111"], Hmax   = rv["1011"] - rv["1111"],
+    fCover = rv["1101"] - rv["1111"], LAD    = rv["1110"] - rv["1111"]
+  )
+
+  # ---- A : barres Shapley ----
+  df_A <- data.frame(
+    variable = factor(variables, levels = var_order),
+    phi      = as.numeric(shap_res$shapley),
+    label    = sprintf("%+.3f\n(%+.0f%%)",
+                       shap_res$shapley,
+                       100 * shap_res$shapley / shap_res$total_effect)
+  )
+  pal_vars <- c(LAI = "#440154", fCover = "#31688e", Hmax = "#35b779", LAD = "#fde725")
+  pA <- ggplot(df_A, aes(x = variable, y = phi, fill = variable)) +
+    geom_col(width = 0.7, colour = "grey20", linewidth = 0.3) +
+    geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.4) +
+    geom_text(aes(label = label, vjust = ifelse(phi >= 0, -0.3, 1.3)),
+              size = 4, fontface = "bold") +
+    scale_fill_manual(values = pal_vars) +
+    scale_y_continuous(expand = expansion(mult = c(0.15, 0.20))) +
+    labs(title    = "A. Shapley attribution of canopy structural drivers",
+         subtitle = sprintf("Total buffering v(N) = %.3f \u00b0C | \u03a3\u03c6 = %.4f",
+                            shap_res$total_effect, shap_res$total_sum),
+         x = NULL, y = expression(phi ~ "(" * degree * "C)")) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none", plot.title = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold", size = 12))
+
+  # ---- B : Forward / LOO / Shapley ----
+  df_B <- data.frame(
+    variable = rep(variables, 3),
+    method   = rep(c("Forward", "LOO", "Shapley"), each = 4),
+    value    = c(as.numeric(forward_gain[variables]),
+                 as.numeric(loo_loss[variables]),
+                 as.numeric(shap_res$shapley))
+  ) %>% mutate(variable = factor(variable, levels = var_order),
+               method   = factor(method, levels = c("Forward", "LOO", "Shapley")))
+
+  pB <- ggplot(df_B, aes(x = variable, y = value, fill = method)) +
+    geom_col(position = position_dodge(0.8), width = 0.7,
+             colour = "grey20", linewidth = 0.2) +
+    geom_hline(yintercept = 0, colour = "grey40", linewidth = 0.4) +
+    scale_fill_manual(values = c(Forward = "#31688e", LOO = "#d8576b", Shapley = "#5ec962"),
+                      name = NULL) +
+    labs(title    = "B. Method comparison : Forward / LOO / Shapley",
+         subtitle = "Shapley averages over all permutations — resolves Forward/LOO divergence",
+         x = NULL, y = "Attribution (\u00b0C)") +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "top", plot.title = element_text(face = "bold"),
+          axis.text.x = element_text(face = "bold", size = 12))
+
+  # ---- C : treillis des 16 coalitions ----
+  df_C <- data.frame(
+    coalition = names(rv), rmse = as.numeric(rv),
+    v_S = shap_res$v_empty - as.numeric(rv)
+  ) %>% mutate(
+    size  = factor(sapply(coalition, function(s) sum(as.integer(strsplit(s,"")[[1]]))),
+                   levels = 0:4, labels = paste0("|S|=", 0:4)),
+    label = sapply(coalition, function(s) {
+      bits <- as.integer(strsplit(s,"")[[1]])
+      lbl  <- paste(c("L","H","F","D")[bits == 1], collapse="")
+      if (lbl == "") "\u2205" else lbl
+    })
+  )
+  pC <- ggplot(df_C, aes(x = size, y = v_S)) +
+    geom_jitter(aes(colour = size), width = 0.15, size = 3.5, alpha = 0.85) +
+    geom_text(aes(label = label), size = 2.8, vjust = -1.1,
+              colour = "grey30", fontface = "bold") +
+    geom_hline(yintercept = shap_res$total_effect, linetype = "dashed",
+               colour = "red", linewidth = 0.6) +
+    annotate("text", x = 0.6, y = shap_res$total_effect,
+             label = sprintf("v(N)=%.3f\u00b0C", shap_res$total_effect),
+             hjust = 0, vjust = -0.5, colour = "red", fontface = "bold", size = 3.5) +
+    scale_colour_viridis_d(option = "plasma", end = 0.85) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    labs(title    = "C. The 2\u2074 = 16 coalitions of the Shapley lattice",
+         subtitle = "v(S) = RMSE(\u2205) \u2212 RMSE(S) | L=LAI, H=Hmax, F=fCover, D=LAD",
+         x = "Coalition size |S|", y = expression("v(S)" ~ "(" * degree * "C)")) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none", plot.title = element_text(face = "bold"))
+
+  fig <- (pA + pB) / pC +
+    patchwork::plot_annotation(
+      title    = "Shapley attribution of canopy structural drivers on \u0394Tmax",
+      subtitle = "Blois oak forest | MuSICA simulations | Summer 2021\u20132022",
+      theme    = theme(plot.title    = element_text(face = "bold", size = 14),
+                       plot.subtitle = element_text(colour = "grey30"))
+    ) +
+    patchwork::plot_layout(heights = c(1.2, 1))
+
+  dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
+  save_plot(fig, out_path, width = 14, height = 11)
+
+  csv_path <- sub("\\.png$", ".csv", out_path)
+  write.csv(data.frame(
+    variable     = variables,
+    shapley      = as.numeric(shap_res$shapley),
+    shapley_pct  = 100 * shap_res$shapley / shap_res$total_effect,
+    forward_gain = as.numeric(forward_gain[variables]),
+    loo_loss     = as.numeric(loo_loss[variables])
+  ), csv_path, row.names = FALSE)
+  cat(sprintf("  [Shapley] PNG : %s\n  [Shapley] CSV : %s\n", out_path, csv_path))
+  invisible(fig)
+}
+
+# ==============================================================================
 # SECTION 11.  SHAPE METRICS (FPCA & Height of Median LAI)
 # ==============================================================================
 
@@ -2795,6 +2978,17 @@ main <- function() {
       out_path          = "outputs/figures/03_h1_loo_scatters_2x2.png"
     )
     print(p_loo_2x2)
+  }
+
+  # ---- 5d. Shapley attribution (requiert H1 factorial complet) ---------------
+  if (FLAGS$RUN_H1_FACTORIAL) {
+    cat("[5d/7] Shapley exact attribution on 2^4 lattice...\n")
+    shap_coalitions <- extract_shapley_coalitions(df_scores)
+    shap_res        <- compute_shapley_exact(shap_coalitions)
+    plot_shapley_attribution(
+      shap_res, df_scores,
+      out_path = "outputs/figures/02_shapley_attribution.png"
+    )
   }
 
   # ---- 6. GAMM emulator -----------------------------------------------------
