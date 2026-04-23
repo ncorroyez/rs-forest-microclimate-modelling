@@ -112,8 +112,8 @@ CFG <- list(
 FLAGS <- list(
   RUN_CLHS                  = TRUE,  # FALSE = réutilise clhs_sample.rds existant
   SKIP_EXISTING_SCENARIOS   = TRUE, # TRUE = skip tout répertoire scénario déjà peuplé
-  RUN_H2_UNIFORM_VS_REAL    = F,   # H2 first pass
-  RUN_H2_CLUSTER_TYPE       = F,  # H2 cluster-type LAD vs real LAD
+  RUN_H2_UNIFORM_VS_REAL    = TRUE,  # H2 first pass
+  RUN_H2_CLUSTER_TYPE       = TRUE,  # H2 cluster-type LAD vs real LAD
   RUN_H1_FORWARD            = TRUE,   # forward inclusion
   RUN_H1_LOO                = TRUE,   # leave-one-out
 
@@ -122,7 +122,7 @@ FLAGS <- list(
   GAMM_SHAPE_VAR            = "CLUSTER",  # Shape predictor: "CLUSTER" (cat.), "FPC", "H_MEDIAN", "NONE"
 
   RUN_VERTICAL_PROFILES     = TRUE,   # profils verticaux Tmax par cluster médian (H2)
-  RUN_H2_STRUCTURE_ANALYSIS = F,   # post-processing léger (< 30 s, pas de simulation)
+  RUN_H2_STRUCTURE_ANALYSIS = TRUE,  # post-processing léger (< 30 s, pas de simulation)
   RUN_HOBO_VALIDATION       = TRUE,   # MuSICA at HOBO locations
   RUN_S2_ANNEX              = TRUE,  # Sentinel-2 annex (H3)
   RUN_H1_FACTORIAL          = TRUE   # heavy, off by default
