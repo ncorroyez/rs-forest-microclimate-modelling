@@ -693,22 +693,30 @@ plot_h2_distributions <- function(df_h2) {
     labs(title = "H2 — ΔTmax distributions: real vs uniform LAD", x = expression(Delta * T[max] ~ (degree*C)), y = "Density")
 }
 
-plot_h2_paired <- function(df_h2_wide) {
-  r2_val   <- cor(df_h2_wide$Real, df_h2_wide$Uniform, use = "complete.obs")^2
-  rmse_val <- sqrt(mean((df_h2_wide$Uniform - df_h2_wide$Real)^2, na.rm = TRUE))
-  bias_val <- mean(df_h2_wide$Uniform - df_h2_wide$Real, na.rm = TRUE)
-  stats_label <- sprintf("R² = %.2f\nRMSE = %.2f°C\nBias = %.2f°C", r2_val, rmse_val, bias_val)
-  
-  axis_lims <- c(min(c(df_h2_wide$Real, df_h2_wide$Uniform), na.rm = TRUE), max(c(df_h2_wide$Real, df_h2_wide$Uniform), na.rm = TRUE))
-  
-  ggplot(df_h2_wide, aes(x = Real, y = Uniform)) + geom_hex(bins = 100) +
+plot_h2_paired <- function(df_h2_wide, col_x = "Real", col_y = "Uniform",
+                            title = "H2 \u2014 Per-plot, per-day \u0394Tmax: real vs uniform LAD",
+                            subtitle = "Paired comparison: impact of vertical profile SHAPE on cooling") {
+  x_vals <- df_h2_wide[[col_x]]; y_vals <- df_h2_wide[[col_y]]
+  r2_val      <- cor(x_vals, y_vals, use = "complete.obs")^2
+  rmse_val    <- sqrt(mean((y_vals - x_vals)^2, na.rm = TRUE))
+  bias_val    <- mean(y_vals - x_vals, na.rm = TRUE)
+  stats_label <- sprintf("R\u00b2 = %.2f\nRMSE = %.2f\u00b0C\nBias = %.2f\u00b0C", r2_val, rmse_val, bias_val)
+  axis_lims   <- range(c(x_vals, y_vals), na.rm = TRUE)
+
+  df_plot <- df_h2_wide; df_plot$.x <- x_vals; df_plot$.y <- y_vals
+  ggplot(df_plot, aes(x = .x, y = .y)) +
+    geom_hex(bins = 100) +
     scale_fill_gradient(low = "grey80", high = "midnightblue", trans = "log10", name = "Count\n(log)") +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "black", linewidth = 0.8) +
-    geom_smooth(method = "lm", colour = "#d73027", se = FALSE, linewidth = 1.2) + coord_fixed(xlim = axis_lims, ylim = axis_lims) +
-    annotate("text", x = -Inf, y = Inf, label = stats_label, hjust = -0.1, vjust = 1.2, fontface = "bold", size = 5) +
-    labs(title = "H2 — Per-plot, per-day ΔTmax: real vs uniform LAD", subtitle = "Paired comparison: impact of vertical profile SHAPE on cooling",
-         x = expression("Real LAD" ~ Delta * T[max] ~ (degree*C)), y = expression("Uniform LAD" ~ Delta * T[max] ~ (degree*C))) +
-    theme_bw(base_size = 14) + theme(legend.position = "right", plot.title = element_text(face = "bold"))
+    geom_smooth(method = "lm", colour = "#d73027", se = FALSE, linewidth = 1.2) +
+    coord_fixed(xlim = axis_lims, ylim = axis_lims) +
+    annotate("text", x = -Inf, y = Inf, label = stats_label,
+             hjust = -0.1, vjust = 1.2, fontface = "bold", size = 5) +
+    labs(title = title, subtitle = subtitle,
+         x = bquote(.(col_x) ~ Delta * T[max] ~ (degree*C)),
+         y = bquote(.(col_y) ~ Delta * T[max] ~ (degree*C))) +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "right", plot.title = element_text(face = "bold"))
 }
 
 analyse_h2_distribution <- function(df_h2_wide, df_macro, threshold = 30) {
@@ -2660,7 +2668,9 @@ main <- function() {
     cat(sprintf("    sd diff: %.3f °C\n",
                 sd(df_h2_ct_w$diff, na.rm = TRUE)))
 
-    p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w)
+    p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w, col_x = "Real", col_y = "Cluster",
+                                    title    = "H2 \u2014 Per-plot, per-day \u0394Tmax: real vs cluster-type LAD",
+                                    subtitle = "Paired comparison: impact of LAD shape typology on cooling")
     save_plot(p_h2_ct_pair, "outputs/figures/annex/A09_h2_ct_cluster_vs_real.png")
     print(p_h2_ct_pair)
 
