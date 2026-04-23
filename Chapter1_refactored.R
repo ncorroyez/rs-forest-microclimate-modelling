@@ -967,7 +967,7 @@ plot_forward_curve <- function(df_scores, forward_order) {
 #' @return Invisible ggplot.
 plot_h1_scenario_scatters <- function(df_all, ref_scenario_name,
                                        forward_names = NULL,
-                                       out_path = "outputs/h1/h1_scatters_vs_ref.png") {
+                                       out_path = "outputs/figures/04_h1_scatters_vs_ref.png") {
   # Noms lisibles pour les strips
   label_map <- c(
     H1f_1_LAI_only        = "+ LAI",
@@ -1053,7 +1053,7 @@ plot_h1_scenario_scatters <- function(df_all, ref_scenario_name,
 #' @return Invisible ggplot.
 compare_h1_rankings <- function(df_scores,
                                  forward_order,
-                                 out_path = "outputs/h1/h1_ranking_comparison.png") {
+                                 out_path = "outputs/figures/02_h1_ranking.png") {
 
   fwd_labels <- c(
     H1f_1_LAI_only        = "LAI",
@@ -1166,7 +1166,7 @@ compare_h1_rankings <- function(df_scores,
 #' @return Invisible ggplot.
 plot_loo_scatters_2x2 <- function(df_all,
                                    ref_scenario_name = "H1f_4_Full_real",
-                                   out_path = "outputs/h1/h1_loo_scatters_2x2.png") {
+                                   out_path = "outputs/figures/03_h1_loo_scatters_2x2.png") {
   loo_map <- c(
     H1l_dropLAI_mean    = "LAI \u2192 moyen",
     H1l_dropHmax_mean   = "Hmax \u2192 moyen",
@@ -1350,7 +1350,7 @@ plot_fpc_scatters <- function(fpca_res, cluster_vec = NULL) {
 #' @return Invisible ggplot.
 plot_fpca_reconstruction <- function(fpca_res, idx_sites = NULL, n_sites = 6,
                                       cluster_vec = NULL,
-                                      out_path = "outputs/fpca/fpca_reconstruction.png") {
+                                      out_path = "outputs/figures/10_fpca_reconstruction.png") {
   z_rel       <- fpca_res$z_rel
   mat_real    <- fpca_res$mat_rel
   scores      <- fpca_res$fpca$scores
@@ -2231,7 +2231,7 @@ plot_vertical_delta_by_cluster <- function(df_sample,
                                             real_lad_dir,
                                             df_macro,
                                             date_seq,
-                                            out_path = "outputs/h2/h2_vertical_delta_by_cluster.png") {
+                                            out_path = "outputs/figures/06_h2_vertical_delta_by_cluster.png") {
   if (!"Cluster" %in% names(df_sample)) {
     warning("[plot_vertical_delta_by_cluster] colonne 'Cluster' absente — abandon.")
     return(invisible(NULL))
@@ -2336,7 +2336,7 @@ plot_vertical_delta_by_cluster <- function(df_sample,
 plot_vertical_tmax_profiles_multi <- function(scenarios_dict, df_sample,
                                                date_seq,
                                                summary_mode = "canicule_date",
-                                               out_path = "outputs/h2/h2_vertical_tmax_profiles_3way.png",
+                                               out_path = "outputs/figures/07_h2_vertical_3way.png",
                                                palette = NULL) {
   dir.create(dirname(out_path), recursive = TRUE, showWarnings = FALSE)
 
@@ -2459,15 +2459,15 @@ main <- function() {
     "outputs/fpca/fpca_variance.txt"
   )
 
-  save_plot(fpca_res$gcv_plot, "outputs/fpca/fpca_gcv_curve.png", width = 8, height = 5)
+  save_plot(fpca_res$gcv_plot, "outputs/figures/annex/A01_fpca_gcv.png", width = 8, height = 5)
   print(fpca_res$gcv_plot)
 
   p_fpca_harm <- plot_fpc_harmonics(fpca_res, fd$mat_lad, fd$z_breaks, fd$df$Hmax)
-  save_plot(p_fpca_harm, "outputs/fpca/fpca_harmonics.png", width = 12, height = 6)
+  save_plot(p_fpca_harm, "outputs/figures/09_fpca_harmonics.png", width = 12, height = 6)
   print(p_fpca_harm)
 
   p_fpca_load <- plot_fpc_loadings(fpca_res)
-  save_plot(p_fpca_load, "outputs/fpca/fpca_loadings.png", width = 10, height = 5)
+  save_plot(p_fpca_load, "outputs/figures/annex/A03_fpca_loadings.png", width = 10, height = 5)
   print(p_fpca_load)
 
   # Ajout des scores FPC1…FPC_n_fpc_sel à df_forest avant clustering et cLHS
@@ -2481,24 +2481,24 @@ main <- function() {
   cl_res    <- label_clusters(df_forest_raw, k = CFG$k_clusters, vars = cluster_vars)
   df_forest <- cl_res$df
   if (!is.null(cl_res$elbow_plot)) {
-    save_plot(cl_res$elbow_plot, "outputs/clusters/kmeans_elbow.png", width = 8, height = 5)
+    save_plot(cl_res$elbow_plot, "outputs/figures/annex/A04_kmeans_elbow.png", width = 8, height = 5)
     print(cl_res$elbow_plot)
   }
 
   p_fpca_scat <- plot_fpc_scatters(fpca_res, cluster_vec = df_forest$Cluster)
-  save_plot(p_fpca_scat, "outputs/fpca/fpca_scatters.png", width = 12, height = 5)
+  save_plot(p_fpca_scat, "outputs/figures/annex/A02_fpca_scatters.png", width = 12, height = 5)
   print(p_fpca_scat)
 
   p_fpca_recon <- plot_fpca_reconstruction(
     fpca_res,
     n_sites     = 6,
     cluster_vec = as.character(df_forest$Cluster),
-    out_path    = "outputs/fpca/fpca_reconstruction.png"
+    out_path    = "outputs/figures/10_fpca_reconstruction.png"
   )
   print(p_fpca_recon)
 
   p_clust_prof <- plot_cluster_mean_profiles(df_forest, fpca_res$mat_rel, fpca_res$z_rel)
-  save_plot(p_clust_prof, "outputs/clusters/cluster_mean_profiles.png", width = 12, height = 6)
+  save_plot(p_clust_prof, "outputs/figures/08_clusters_lad_profiles.png", width = 12, height = 6)
   print(p_clust_prof)
 
   # ---- 3. cLHS sampling (LAI, Hmax, fCover, FPC1, FPC2) ---------------------
@@ -2532,16 +2532,16 @@ main <- function() {
     df_h2_w  <- summarise_h2(df_h2)
     
     p_h2_dist <- plot_h2_distributions(df_h2)
-    save_plot(p_h2_dist, "outputs/h2/h2_distributions.png")
+    save_plot(p_h2_dist, "outputs/figures/annex/A06_h2_distributions.png")
     print(p_h2_dist)
 
     p_h2_pair <- plot_h2_paired(df_h2_w)
-    save_plot(p_h2_pair, "outputs/h2/h2_paired_real_vs_uniform.png")
+    save_plot(p_h2_pair, "outputs/figures/05_h2_paired_real_vs_uniform.png")
     print(p_h2_pair)
 
     cat(sprintf("    mean per-plot diff (real - uniform): %.3f \u00b0C\n", mean(df_h2_w$diff, na.rm = TRUE)))
     p_h2_hw <- analyse_h2_distribution(df_h2_w, df_macro, CFG$heatwave_thr)
-    save_plot(p_h2_hw, "outputs/h2/h2_heatwave_histogram.png")
+    save_plot(p_h2_hw, "outputs/figures/annex/A07_h2_heatwave.png")
 
     if (FLAGS$RUN_H2_STRUCTURE_ANALYSIS) {
       cat("[audit] Analyse structure de la diff H2...\n")
@@ -2597,7 +2597,7 @@ main <- function() {
             if (nrow(cl_full) == 1) {
               plot_lad_profile_for_plot(
                 cl_full,
-                sprintf("outputs/h2/c%s_median_lad_profile.png", cl)
+                sprintf("outputs/figures/annex/A08_c%s_median_lad_profile.png", cl)
               )
             }
           }
@@ -2621,7 +2621,7 @@ main <- function() {
         real_lad_dir = file.path(CFG$out_h2, "H2_real_LAD"),
         df_macro     = df_macro,
         date_seq     = CFG$date_seq,
-        out_path     = "outputs/h2/h2_vertical_delta_by_cluster.png"
+        out_path     = "outputs/figures/06_h2_vertical_delta_by_cluster.png"
       )
 
       # ---- Profils 3 scénarios (Real / Cluster-type / Uniform) ----------------
@@ -2635,7 +2635,7 @@ main <- function() {
         df_sample    = df_sample,
         date_seq     = CFG$date_seq,
         summary_mode = "canicule_date",
-        out_path     = "outputs/h2/h2_vertical_tmax_profiles_3way_canicule.png"
+        out_path     = "outputs/figures/07_h2_vertical_3way_canicule.png"
       )
     }
   }
@@ -2661,7 +2661,7 @@ main <- function() {
                 sd(df_h2_ct_w$diff, na.rm = TRUE)))
 
     p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w)
-    save_plot(p_h2_ct_pair, "outputs/h2/h2_ct_paired_real_vs_cluster.png")
+    save_plot(p_h2_ct_pair, "outputs/figures/annex/A09_h2_ct_cluster_vs_real.png")
     print(p_h2_ct_pair)
 
     # Summary per cluster
@@ -2749,13 +2749,13 @@ main <- function() {
   write.csv(df_scores, "outputs/h1/h1_scores.csv", row.names = FALSE)
 
   p_h1_hier <- plot_scenario_hierarchy(df_scores, ref_sc$name)
-  save_plot(p_h1_hier, "outputs/h1/h1_hierarchy.png")
+  save_plot(p_h1_hier, "outputs/figures/annex/A05_h1_hierarchy.png")
   print(p_h1_hier)
 
   if (FLAGS$RUN_H1_FORWARD) {
     forward_order <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
     p_h1_fwd <- plot_forward_curve(df_scores, forward_order)
-    save_plot(p_h1_fwd, "outputs/h1/h1_forward_curve.png")
+    save_plot(p_h1_fwd, "outputs/figures/01_h1_forward_curve.png")
     print(p_h1_fwd)
 
     # Scatter par paramètre (demandé réunion 17/04) — exclut Null_baseline et ref
@@ -2764,7 +2764,7 @@ main <- function() {
       df_all_scenarios,
       ref_scenario_name = ref_sc$name,
       forward_names     = forward_sc_names,
-      out_path          = "outputs/h1/h1_scatters_vs_ref.png"
+      out_path          = "outputs/figures/04_h1_scatters_vs_ref.png"
     )
     print(p_h1_sc)
 
@@ -2772,7 +2772,7 @@ main <- function() {
     p_h1_rank <- compare_h1_rankings(
       df_scores,
       forward_order = forward_order,
-      out_path      = "outputs/h1/h1_ranking_comparison.png"
+      out_path      = "outputs/figures/02_h1_ranking.png"
     )
     print(p_h1_rank)
   }
@@ -2782,7 +2782,7 @@ main <- function() {
     p_loo_2x2 <- plot_loo_scatters_2x2(
       df_all_scenarios,
       ref_scenario_name = ref_sc$name,
-      out_path          = "outputs/h1/h1_loo_scatters_2x2.png"
+      out_path          = "outputs/figures/03_h1_loo_scatters_2x2.png"
     )
     print(p_loo_2x2)
   }
@@ -2814,10 +2814,11 @@ main <- function() {
     p_gamm_eff <- plot_gamm_marginal_effects(gam_ref,
                                               shape_type      = FLAGS$GAMM_SHAPE_VAR,
                                               use_macroclimate= FLAGS$USE_MACROCLIMATE_GAMM)
-    save_plot(p_gamm_eff, "outputs/gamm/gamm_marginal_effects.png", width = 12, height = 8)
+    save_plot(p_gamm_eff, "outputs/figures/annex/A10_gamm_effects.png", width = 12, height = 8)
     print(p_gamm_eff)
 
-    png("outputs/gamm/gamm_residuals_diagnostic.png", width = 1200, height = 900, res = 120)
+    dir.create("outputs/figures/annex", recursive = TRUE, showWarnings = FALSE)
+  png("outputs/figures/annex/A11_gamm_residuals.png", width = 1200, height = 900, res = 120)
     diag_res <- diagnose_residuals(gam_ref, df_gamm)
     dev.off()
     print(diag_res)
@@ -2840,7 +2841,7 @@ main <- function() {
     write.csv(hobo_res$metrics, "outputs/hobo/hobo_metrics.csv", row.names = FALSE)
 
     p_hobo_val <- plot_hobo_validation(hobo_res$metrics)
-    save_plot(p_hobo_val, "outputs/hobo/hobo_validation_rmse.png")
+    save_plot(p_hobo_val, "outputs/figures/annex/A12_hobo_validation.png")
     print(p_hobo_val)
 
     fw_names  <- vapply(scenarios_h1_forward(df_sample), `[[`, "", "name")
@@ -2850,7 +2851,7 @@ main <- function() {
     df_unif <- hobo_res$daily %>% filter(scenario == fw_names["LAI_Hmax_fCover"]) %>% mutate(Tmax_micro = Delta_sim + Tmax_macro)
 
     p_ts <- plot_timeseries_faceted(rep_hobos, df_hobo_daily, df_real, df_unif, df_macro)
-    save_plot(p_ts, "outputs/hobo/hobo_timeseries_representatives.png", width = 12, height = 10)
+    save_plot(p_ts, "outputs/figures/annex/A13_hobo_timeseries.png", width = 12, height = 10)
     print(p_ts)
   }
   
@@ -2883,7 +2884,7 @@ main <- function() {
            x = expression(Delta * T[max] ~ (degree*C)), y = "Density", fill = "Input Source", colour = "Input Source") +
       theme(legend.position = "bottom")
     
-    save_plot(p_s2_density, "outputs/s2_annex/s2_density.png")
+    save_plot(p_s2_density, "outputs/figures/annex/A14_s2_density.png")
     print(p_s2_density)
 
     axis_lims_s2 <- c(min(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE), max(c(df_s2_matched$Delta_ref, df_s2_matched$Delta_Tmax), na.rm = TRUE))
@@ -2898,7 +2899,7 @@ main <- function() {
            x = expression("LiDAR (Full 3D Real)" ~ Delta * T[max] ~ (degree*C)), y = expression("Sentinel-2 + FORMS-H" ~ Delta * T[max] ~ (degree*C))) +
       theme_bw(base_size = 14) + theme(legend.position = "right", plot.title = element_text(face = "bold"))
     
-    save_plot(p_s2_paired, "outputs/s2_annex/s2_paired.png")
+    save_plot(p_s2_paired, "outputs/figures/annex/A15_s2_paired.png")
     print(p_s2_paired)
 
     writeLines(sprintf("R2: %.4f\nRMSE: %.4f deg C\nBias: %.4f deg C", s2_r2, s2_rmse, s2_bias),
