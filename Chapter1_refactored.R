@@ -2659,16 +2659,16 @@ main <- function() {
       pivot_wider(id_cols = c(x, y, date),
                   names_from  = scenario,
                   values_from = Delta_Tmax) %>%
-      rename_with(~ "Real",    matches("real_LAD")) %>%
-      rename_with(~ "Cluster", matches("cluster_type_LAD")) %>%
-      mutate(diff = Real - Cluster)
+      rename_with(~ "Real",        matches("real_LAD")) %>%
+      rename_with(~ "ClusterType", matches("cluster_type_LAD")) %>%
+      mutate(diff = Real - ClusterType)
 
     cat(sprintf("    mean per-plot diff (real - cluster-type): %.3f °C\n",
                 mean(df_h2_ct_w$diff, na.rm = TRUE)))
     cat(sprintf("    sd diff: %.3f °C\n",
                 sd(df_h2_ct_w$diff, na.rm = TRUE)))
 
-    p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w, col_x = "Real", col_y = "Cluster",
+    p_h2_ct_pair <- plot_h2_paired(df_h2_ct_w, col_x = "Real", col_y = "ClusterType",
                                     title    = "H2 \u2014 Per-plot, per-day \u0394Tmax: real vs cluster-type LAD",
                                     subtitle = "Paired comparison: impact of LAD shape typology on cooling")
     save_plot(p_h2_ct_pair, "outputs/figures/annex/A09_h2_ct_cluster_vs_real.png")
