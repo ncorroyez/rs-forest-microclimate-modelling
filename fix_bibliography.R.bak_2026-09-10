@@ -1,0 +1,188 @@
+#!/usr/bin/env Rscript
+# ---------------------------------------------------------------------------
+# fix_bibliography.R
+#
+# Produit `Bib_these.bib`, la bibliographie stable de la these, a partir du
+# dernier export Zotero `Bib_nathan_corroyez*.bib` trouve a la racine.
+#
+# Raison d'etre : les exports portent des noms dates, ils sont supprimes et
+# recrees, et chacun reintroduit les memes defauts tant que la bibliotheque
+# Zotero n'est pas reparee. Les YAML des manuscrits pointaient donc vers des
+# fichiers disparus. Ici, ils pointent tous vers un nom stable.
+#
+# A RELANCER APRES CHAQUE EXPORT ZOTERO :
+#   Rscript fix_bibliography.R
+#
+# Trois operations, dans cet ordre :
+#   1. assainit les cles de citation contenant des caracteres qui font echouer
+#      citeproc ($ ^ \ { } % # &  ~) -- une seule cle invalide fait perdre
+#      la totalite des entrees, pas seulement la sienne ;
+#   2. applique les corrections de `bib_fixes.bib` (remplacement par cle, et
+#      suppression des doublons de meme titre portant une autre cle) ;
+#   3. signale les entrees reellement citees par les manuscrits qui sont
+#      absentes, sans annee ou sans auteur.
+#
+# Le script est idempotent : deux executations sur le meme export donnent des
+# sorties identiques au byte pres.
+# ---------------------------------------------------------------------------
+
+root      <- normalizePath(dirname(sub("^--file=", "", grep("^--file=",
+               commandArgs(trailingOnly = FALSE), value = TRUE)[1])))
+if (is.na(root) || !nzchar(root)) root <- getwd()
+
+fixes_file <- file.path(root, "bib_fixes.bib")
+out_file   <- file.path(root, "Bib_these.bib")
+
+# Manuscrits dont les citations sont verifiees.
+manuscripts <- c(
+  "review/intro_generale_these_EN.md",
+  "Chapitre1/redaction/manuscript_chap1_EN_native20.md",
+  "Chapitre1/redaction/manuscript_chap1_EN_native20_SHORT.md"
+)
+
+say <- function(...) cat(sprintf(...), "\n", sep = "")
+
+# --- 1. localiser le dernier export -----------------------------------------
+
+exports <- list.files(root, pattern = "^Bib_nathan_corroyez.*\\.bib$",
+                      full.names = TRUE)
+exports <- exports[basename(exports) != basename(out_file)]
+if (length(exports) == 0L)
+  stop("Aucun export Bib_nathan_corroyez*.bib trouve dans ", root)
+export <- exports[order(file.mtime(exports), decreasing = TRUE)][1]
+say("Export source : %s (%s)", basename(export),
+    format(file.mtime(export), "%Y-%m-%d %H:%M"))
+
+# --- outils de decoupage ----------------------------------------------------
+
+# Renvoie un data.frame une ligne par entree : cle, titre normalise, texte brut.
+split_entries <- function(lines) {
+  starts <- grep("^@[A-Za-z]+\\{", lines)
+  if (!length(starts)) return(NULL)
+  ends <- c(starts[-1] - 1L, length(lines))
+  txt  <- vapply(seq_along(starts),
+                 function(i) paste(lines[starts[i]:ends[i]], collapse = "\n"),
+                 character(1))
+  key  <- sub("^@[A-Za-z]+\\{([^,]+),.*$", "\\1", lines[starts])
+  ttl  <- vapply(txt, function(s) {
+    m <- regmatches(s, regexpr("(?m)^\\s*title\\s*=\\s*\\{.*", s, perl = TRUE))
+    if (!length(m)) return("")
+    m <- sub("^\\s*title\\s*=\\s*\\{", "", m)
+    tolower(gsub("\\s+", " ", trimws(gsub("[{}\\\\]", " ", m))))
+  }, character(1), USE.NAMES = FALSE)
+  data.frame(key = trimws(key), title = ttl, text = txt,
+             stringsAsFactors = FALSE)
+}
+
+lines <- readLines(export, warn = FALSE, encoding = "UTF-8")
+ent   <- split_entries(lines)
+say("  %d entrees lues", nrow(ent))
+
+# --- 2. assainir les cles dangereuses ---------------------------------------
+# Une cle citee par un manuscrit n'est JAMAIS renommee : la renommer casserait
+# la citation en silence, ce qui est pire que l'erreur de parsing. On la
+# signale et on s'arrete.
+
+cited <- unique(unlist(lapply(manuscripts, function(f) {
+  p <- file.path(root, f)
+  if (!file.exists(p)) return(character(0))
+  s <- paste(readLines(p, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  m <- regmatches(s, gregexpr("@[A-Za-z][A-Za-z0-9_:+-]*", s))[[1]]
+  sub("^@", "", m)
+})))
+
+bad <- grep("[$^\\\\{}%#&~]", ent$key)
+if (length(bad)) {
+  clash <- intersect(ent$key[bad], cited)
+  if (length(clash))
+    stop("Cle invalide ET citee, renommage refuse : ",
+         paste(clash, collapse = ", "),
+         "\n  -> epingler une cle propre dans Zotero (Better BibTeX) ",
+         "et corriger la citation dans le manuscrit.")
+  for (i in bad) {
+    new <- gsub("[^A-Za-z0-9_:+-]", "", ent$key[i])
+    say("  cle assainie : %s -> %s", ent$key[i], new)
+    ent$text[i] <- sub(ent$key[i], new, ent$text[i], fixed = TRUE)
+    ent$key[i]  <- new
+  }
+} else {
+  say("  aucune cle dangereuse")
+}
+
+# --- 3. appliquer bib_fixes.bib ---------------------------------------------
+
+if (file.exists(fixes_file)) {
+  fx <- split_entries(readLines(fixes_file, warn = FALSE, encoding = "UTF-8"))
+  if (!is.null(fx) && nrow(fx)) {
+    # Retirer l'entree de meme cle, et tout doublon de meme titre sous une
+    # autre cle (c'est le cas De Frenne : une souche vide survit a la fusion).
+    drop <- ent$key %in% fx$key |
+            (nzchar(ent$title) & ent$title %in% fx$title[nzchar(fx$title)])
+    if (any(drop))
+      for (k in ent$key[drop]) say("  remplacee/supprimee : %s", k)
+    ent <- rbind(ent[!drop, ], fx)
+    say("  %d correction(s) appliquee(s) depuis bib_fixes.bib", nrow(fx))
+  }
+} else {
+  say("  bib_fixes.bib absent : aucune correction appliquee")
+}
+
+# --- 4. ecrire la sortie ----------------------------------------------------
+
+ent <- ent[order(tolower(ent$key)), ]
+header <- c(
+  "% Bibliographie stable de la these -- NE PAS EDITER A LA MAIN.",
+  "% Genere par fix_bibliography.R a partir du dernier export Zotero.",
+  sprintf("%% Source : %s", basename(export)),
+  "% Les corrections vivent dans bib_fixes.bib.",
+  ""
+)
+writeLines(c(header, paste(ent$text, collapse = "\n\n"), ""), out_file,
+           useBytes = TRUE)
+say("Ecrit : %s (%d entrees)", basename(out_file), nrow(ent))
+
+# --- 5. controle des citations ----------------------------------------------
+
+say("")
+say("Controle des manuscrits :")
+missing_any <- FALSE
+for (f in manuscripts) {
+  p <- file.path(root, f)
+  if (!file.exists(p)) { say("  %-46s ABSENT", basename(f)); next }
+  s <- paste(readLines(p, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
+  k <- unique(sub("^@", "",
+        regmatches(s, gregexpr("@[A-Za-z][A-Za-z0-9_:+-]*", s))[[1]]))
+  miss <- setdiff(k, ent$key)
+  say("  %-46s %3d citees, %d non resolue(s)", basename(f), length(k),
+      length(miss))
+  if (length(miss)) {
+    missing_any <- TRUE
+    for (m in miss) say("      MANQUANTE : %s", m)
+  }
+}
+
+# Entrees citees sans annee ou sans auteur : elles rendent "n.d." ou un
+# auteur vide dans la liste de references.
+cited_idx <- which(ent$key %in% cited)
+no_year <- ent$key[cited_idx[!grepl("(?m)^\\s*year\\s*=", ent$text[cited_idx],
+                                    perl = TRUE)]]
+no_auth <- ent$key[cited_idx[!grepl("(?m)^\\s*author\\s*=\\s*\\{[^,}]",
+                                    ent$text[cited_idx], perl = TRUE)]]
+if (length(no_year)) {
+  say("")
+  say("  Citees mais SANS ANNEE (rendront \"n.d.\") -- a corriger dans Zotero :")
+  for (k in no_year) say("      %s", k)
+}
+if (length(no_auth)) {
+  say("")
+  say("  Citees mais SANS AUTEUR exploitable -- a corriger dans Zotero :")
+  for (k in no_auth) say("      %s", k)
+}
+
+say("")
+if (missing_any) {
+  say("Des citations ne resolvent pas : ajouter les items dans Zotero,")
+  say("reexporter, puis relancer ce script.")
+} else {
+  say("Toutes les citations des manuscrits resolvent.")
+}

@@ -1,0 +1,362 @@
+  ! -*- Mode: F90 -*-
+
+  ! ----------------------------------------------------------------------------
+  !
+  ! MuSICA v3.0 namelist
+  !
+  ! Setup of a MuSICA simulation
+  !
+  ! ----------------------------------------------------------------------------
+  !
+  ! Contact and bug report: jerome.ogee@inra.fr
+  !
+  ! Notes
+  !   1. Names are case insensitive.
+  !      DEBUG = .true.
+  !      debug = .True.
+  !   2. Commenting out (or deleting) lines uses the default settings for that option.
+  !      ! debug=.true.
+  !   3. File names, directories and any other string must be quoted with
+  !      single (') or double (") quotes.
+  !      file = 'file.nc'
+  !      string = "file.nc"
+  !   4. Strings are case sensitive.
+  !      string1 = 'anotherstring'
+  !      string2 = 'AnotherString'
+  !   5. All paths are either absolute or relative to the MuSICA executable.
+  !      file = '/absolute/path/to/file.nc'
+  !      file = 'relative/path/to/file.nc'
+  !   6. Multiple values for an array are delimited by commas.
+  !      array = 0, 1, 2, 3
+  !      chararray = 'one, 'two', 'three'
+  !   7. Logical switches are case insensitive .true., .false. or .t., .f.
+  !      switch = .True.
+  !
+  ! ----------------------------------------------------------------------------
+
+
+  ! ----------------------------------------------------------------------------
+  ! SETUP - filenames, flags, etc. for current
+  !         former namelists of driver routine and musica module
+  &setupctl
+  ! For screen control (default: .false.)
+  DEBUG = .true.
+  RESTIN_FILENAME  = ""
+  !
+  ! ABL_flag = 'up'
+  ! FORCING_FILENAME = "in_files/musica_in_Blois.nc"
+  ! HISTORY_FILENAME = "out_files/musica_out_Blois_SITELOC.nc"
+  FORCING_FILENAME = "in_files/musica_in_Safran_Blois_2021.nc"
+  HISTORY_FILENAME = "out_files/musica_out_Safran_Blois_2021_SITELOC.nc"
+  ! RESTOUT_FILENAME = ""
+  !
+  ! History variables
+  ! The names of the variables you want to save.
+  ! Should be exactly (case insensitive though) as the first column in variables.csv provided with MuSICA
+  ! Mandatory information
+  HISTORY_VARIABLES = "layer_thickness", "z_soil", "dz_soil", "t_soil", "w_soil", "t_air", "w_air", "wind"
+  !HISTORY_DAILY_VARIABLES = "tadx"
+  !
+  ! Description of forcing data
+  ! Must be specified:
+  ! - forcing height (meters)
+  ! - forcing time step (seconds)
+  ! - site latitude (degrees, from -90 to 90)
+  ! - site longitude (degrees, from -180 to +180)
+  ! - time shift between time in ASCII file and GMT (hours, from -12 to +12)
+  ! Mandatory information
+  FORCING_HEIGHT   = 15.62
+  FORCING_TIMESTEP = 3600
+  SITE_LATITUDE    = 47.57
+  SITE_LONGITUDE   = 1.26
+  SITE_ALTITUDE    = 39.18
+  TIME2GMT         = 0.0
+  !
+  ! Model vertical resolution
+  ! Air vertical axis resolution level
+  ! 1 = 30/20 layers in air/vegetation
+  ! 2 = 15/10 layers in air/vegetation
+  ! DEFAULT = 2
+  AIR_RESOLUTION_LEVEL = 2
+  !
+  ! Air grid type
+  ! 1 = regular grid
+  ! 2 = irregular grid (thinner layers close to ground)
+  ! DEFAULT = 1
+  AIR_GRID_TYPE = 2
+  !
+  ! Soil vertical axis resolution
+  ! DEFAULT = 10
+  ! MIN = 10
+  ! MAX = 200
+  ! N_SOIL_LAYER = 10
+  N_SOIL_LAYER = 15
+  !
+  ! Number of leaf age classes (cohorts)
+  ! DEFAULT = 3
+  N_LEAF_AGE = 1
+  !
+  ! Model options
+  !
+  !
+  ! Weather generator
+  ! This activates the weather generator option
+  ! DEFAULT = .false.
+  WEATHERGEN_FLAG = .false.
+  !
+  ! Turbulent transfer model options
+  ! If you want to activate the turbulent transfer
+  ! model and the near-field contribution in it
+  ! DEFAULT = .true. and .true.
+  TURB_FLAG = .true.
+  LNF_NEARFIELD_FLAG = .true.  
+  !
+  ! To activate modules for other tracers
+  ! DEFAULT = .false. for all
+  ISOTOPE_FLAG = .false.
+  OZONE_FLAG = .false.
+  OCS_FLAG = .false.
+  ALT_LMA_FLAG = .false.
+  SOLUTEINSOIL_FLAG= .false.
+  !
+  ! Model parameter files
+  !
+  ! Path for parameter files listed below
+  ! DEFAULT = "param_files/"
+  PARAM_FILES_PATH = "./in_files/Blois/in_files/"
+  !
+  ! Species number and species-specific parameter file names
+  ! (species names should be the same as the species-specific file names
+  !  but without the ".txt")
+  ! DEFAULT = 1 and "none"
+  N_SPECIES = 1
+  SPECIES_NAMES = "musica_veg1"
+  !
+  ! Soil parameter file name
+  ! DEFAULT = "none"
+  SOIL_FILE_NAME = "./in_files/Blois/in_files/musica_soil.nml"
+  !
+  ! The flag "ASCII_LEVEL" is needed to check HISTORY_VARIABLES and
+  ! possibly add output variables in netcdf history file.
+  !
+  ! The flag is decoded as follows
+  ! ASCII_LEVEL = 0 -> no ASCII output file
+  ! ASCII_LEVEL = 1 * flag (0 or 1) for ecosystem-scale fluxes
+  !             + 2 * flag (0 or 1) for soil profiles
+  !             + 4 * flag (0 or 1) atmospheric profiles
+  !             + 8 * flag (0 or 1) species-specific variables
+  !
+  ! e.g. ASCII_LEVEL= 5: only atmospheric profiles and ecosystem-scale fluxes
+  ! e.g. ASCII_LEVEL=10: only soil profiles and species-specific variables
+  ! DEFAULT = 0
+  ASCII_LEVEL = 0
+  !
+  ! Leaf gas-exchange model options
+  ! You can choose which photosynthetic limitation you
+  ! want, either stomatal limitations (PHOTOSYNTHETIC_LIMITATION_FLAG=1)
+  ! or biochemical limitation (PHOTOSYNTHETIC_LIMITATION_FLAG=2)
+  ! or both (PHOTOSYNTHETIC_LIMITATION_FLAG=3)
+  ! DEFAULT = 1
+  !
+  ! NOTE: if GM_FLAG=y in species-specific parameter file, then
+  ! Vmax/Jmax values are supposed to be based on A-Cc curves rather
+  ! than A-Ci curves and in this case, stomatal limitations
+  ! also imply mesophyll limitations
+  !
+  ! NOTE: as explained in Ethier & Livingston (2004) biochemical
+  ! limitations are usually evoked because mesophyll limitations
+  ! are not accounted for and are a (good?) way to mimic a reduction
+  ! in mesophyll conductance while still using Vmax/Jmax from
+  ! A-Ci curves, not A-Cc curves
+  ! DEFAULT = 1
+  PHOTOSYNTHETIC_LIMITATION_FLAG = 3
+  !
+  ! DEFAULT = 1.
+  CLUMPING_FACTOR = 0.95
+  !
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! SNOW - snow model switches
+  &snowctl
+  !
+  ! Snow model
+  ! 0. No snow model. Snow is instantaneous liquid precipitation
+  !    RainF = Rainf + Snowf
+  !
+  ! 1. Simple first-order snow accumulation model
+  !    dSnow/dt = SnowF - SnowMelt
+  !    SnowMelt = ddf * (T - Tmelt)   if T > Tmelt
+  !
+  ! 2. ToDo: HBV
+  !
+  ! default: 0
+  SNOW_MODEL_FLAG = 0
+  !
+  ! all
+  ! If .true., take snow from variable Snowf of forcing file
+  ! If .false., determine snow fall from Rainf depending on temperature,
+  !     e.g. TSNOW_THRESHOLD; details depend on chosen snow model
+  ! default: .true.
+  SNOW_INPUT = .true.
+  ! Initial snow pack (kg/m2 == mm)
+  ! default: 0.
+  INIT_SNOW = 5.
+  !
+  ! snow model 1
+  ! threshold temperature for Rainf as snow (Snowf) if SNOW_INPUT is .false.
+  ! default: 1.
+  TSNOW_THRESHOLD = 1.
+  ! threshold temperature (Tmelt) for snow melt
+  ! default: 1.
+  TMELT_THRESHOLD = 1.
+  ! degree day factor (ddf) for snowmelt
+  ! default: 5.
+  SNOW_DDF = 5.
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! ISOTOPE - isotope specific switches
+  &isotopectl
+  !
+  ! Soil water isotope model boundary condition (BC) options
+  !
+  ! The BC at botton of soil column is either a fixed soil water isotope
+  ! composition equal to the precipitation-weighted rain water isotope
+  ! composition  (NEUMANN_ISO_BOT_FLAG = n) or a fixed soil water isotope
+  ! flux composition also equal to the precipitation-weighted rain water
+  ! isotope composition (NEUMANN_ISO_BOT_FLAG = y)
+  ! DEFAULT = .true.
+  NEUMANN_ISO_BOT_FLAG = .true.
+  !
+  ! Carbonic anhydrase activity factor in soil
+  ! Default = 1.0
+  fCA_soil = 30.0
+  !
+  ! Default = .false
+  CONSTANT_PECLET_FLAG = .false.
+  !
+  ! isotopic composition of alimentation water (needed for some BCs or initialisation of variables)
+  ! Default = .false
+  D_ALIM_FLAG = .false.
+  ! Default = 0., 0.
+  D_ALIM = 0., 0.
+  !
+  ! (optional) flag for testing soil module (see Haverd & Cuntz, J Hydrol 2010)
+  ! Default = .false
+  TEST_CASE = .false.
+  ! 1-8 if TEST_CASE_FLAG=.true.
+  ! Default = -1
+  TEST_CASE_ID = -1
+  !
+  ! SPECIES-SPECIFIC PARAMETERS
+  ! if several species, add as many values as there are species
+  !
+  ! Mesophyll water volume (in mol(H2O)/m2(leaf))
+  ! (for water isotopes only)
+  ! Default = 10
+  WATER_VOLUME_PERLAI = 10., 10.
+  ! 0-1
+  ! Default = 1
+  CO2_H2O_EQ_DEGREE_INLEAF = 1.0, 1.0
+
+  ! Default = .false
+  CONSTANT_PECLET_FLAG = .true.
+  ! if CONSTANT_PECLET_FLAG = .true.
+  ! Default = 0.2
+  PECLET_INLEAF = 0.2, 0.2
+  ! if CONSTANT_PECLET_FLAG = .false.
+  ! Default = 10e-3
+  ! MIXING_LENGTH_INLEAF = 
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! SOLUTEINSOIL - soil solute fluxes
+  &soluteinsoilctl
+  !
+  ! Test flags and boundary conditions
+  !
+  ! (optional) flag for testing soil module (see Haverd & Cuntz, J Hydrol 2010)
+  ! Default = .false
+  SOLUTE_TEST_CASE = .false.
+  ! 1-8 if SOLUTE_TEST_CASE_FLAG=.true.
+  ! Default = -1
+  ! SOLUTE_TEST_CASE_ID = 2 All fractionations are absent
+  SOLUTE_TEST_CASE_ID = 2
+  !
+  ! solute concentration of alimentation water (needed for some BCs or initialisation of variables)
+  ! Default = .false
+  SOLUTE_ALIM_FLAG = .false.
+  ! cl if SOLUTE_ALIM_FLAG=.true.
+  ! Default = 0., 0.
+  SOLUTE_ALIM = 0.
+  !
+  ! Parameters of function: solute_alfa_root_uptake_function (micromol g-1 fresh weight)
+  ! Solute_CM     = the xylem sap Cl- concentration (micromol g-1 fresh weight)
+  !                 when positive and negative Cl feedbacks are equivalent
+  Solute_CM = 4.0
+  ! Solute_CR     = the maximal xylem sap Cl- concentration (micromol g-1 fresh weight)
+  !                 according to the plant traits
+  Solute_CR = 170.0
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! OZONE - ozone specific switches - namelist of ozone module
+  &ozonectl
+  ! flag to allow detoxification processes
+  ! default=.false.
+  FINITE_gO3_APO_FLAG = .false.
+  ! flag to allow deposition on wet leaves
+  ! default=.false.
+  NONZERO_gO3_WET_FLAG = .false.
+  ! flag to allow deposition on dry leaves
+  ! default=.false.
+  NONZERO_gO3_DRY_FLAG = .false.
+  ! to choose deposition model on dry leaves (1=Tuzet, 2=Grontoft, 3=constant)
+  ! default=1
+  gO3_DRY_CUT_MODEL_TYPE = 1
+  ! to choose soil deposition model (0=none, 1=simple, 2=diffusion, 3=rh model)
+  ! default=1
+  gO3_SOIL_TYPE = 2
+  !
+  ! SPECIES-SPECIFIC PARAMETERS
+  ! if several species, add as many values (comma-separated) as there are species
+  !
+  ! needed only if deposition on wet leaves
+  ! default=2e-2
+  V_BOT_WF = 1e-6, 1e-6
+  !
+  ! reaction rate in water film (k_chim = 0 for no chemistry)
+  ! add minus sign to have variable reaction rate with water film thickness
+  ! (dilution effect)
+  ! default=0.
+  K_CHIM_CST = 0., 0.
+  !
+  ! SOIL PARAMETERS
+  !
+  ! minimum soil deposition
+  ! default=100.
+  rO3_SOIL_MIN = 21.15
+  !
+  ! rh-dependance soil deposition (only if gO3_SOIL_TYPE=3)
+  ! default=0.05
+  rO3_SOIL_K = 0.015
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! ALLOCATION -
+  &allocationctl
+  ! respiration method
+  ! available option: "musica_original", "ryan", "castanea"
+  resp_maintenance_method = "musica_original"
+  ! allocation method
+  ! available option: "musica_original", "casa", "casa_leaf_sink", "castanea_v0", "nsc_source"
+  ! "nsc_source_leaf_sink"
+  C_alloc_method = "musica_original"
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! TEMPLATE - to show MuSICA structure
+  &templatectl
+  iamprivate = 1.
+  /

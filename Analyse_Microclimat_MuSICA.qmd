@@ -1,0 +1,973 @@
+---
+title: "Analyse_Microclimat_MuSICA.qmd"
+author: "Nathan Corroyez"
+format: 
+  html:
+    toc: true
+    code-fold: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+    self-contained: true
+  docx: default
+date: last-modified
+editor: visual
+---
+
+```{r}
+#| message: false
+#| warning: false
+
+# ==============================================================================
+# 0. CONFIGURATION & LIBRAIRIES
+# ==============================================================================
+library(musica.tools) 
+library(ncdf4)       
+library(tidyverse)   
+library(lubridate)   
+library(lme4)        
+library(lmerTest)    
+library(broom.mixed) 
+library(ggeffects)   
+library(patchwork)   
+library(viridis)
+library(ggrepel)
+library(performance)
+library(mgcv)
+
+# Thème graphique publication
+theme_set(theme_bw() + 
+            theme(text = element_text(size = 12, family = "sans"),
+                  plot.title = element_text(face = "bold", size = 14),
+                  legend.position = "bottom",
+                  strip.background = element_rect(fill = "grey95"),
+                  strip.text = element_text(face = "bold")))
+
+# Ordre logique des formes pour les graphiques
+shape_order <- c("top_peak_uniform", "top_heavy", "uniform", "symmetric", 
+                 "top_bottom_heavy", "low_symmetric", "bottom_heavy", "extreme_bottom")
+
+# --- CHEMINS (A VÉRIFIER) ---
+in_dir        <- "in_files"
+out_dir       <- "out_files/Sensitivity_Analysis" 
+valid_dir     <- "out_files/TS/lidar/lidar_constant" 
+
+ign_file      <- file.path(in_dir, "MetHor2021.txt")
+hobo_file     <- file.path(in_dir, "Blois_data_temperature.csv")
+lidar_file    <- file.path(in_dir, "allometry_profiles.csv")
+metrics_file  <- file.path(in_dir, "metrics_results_25.csv")
+
+# Période d'étude
+date_seq      <- seq(as.Date("2021-06-01"), as.Date("2021-09-30"), by = "day")
+ids_to_remove <- c("41_13", "41_14", "41_20", "41_41", "41_50", "41_51", "41_53")
+```
+
+```{r}
+#| label: fig-1-theoretical
+#| fig-cap: "Figure 1 (Panneau) : Les 8 archétypes théoriques de distribution verticale du feuillage (LAD) utilisés dans le plan d'expérience."
+
+# 1. Définition des Fonctions Mathématiques (Les "Recettes" de tes profils)
+# Ces paramètres doivent correspondre exactement à ceux utilisés pour générer tes netcdf
+get_theo_profile <- function(z, shape_name) {
+  if (shape_name == "Uniform") {
+    return(rep(1, length(z)))
+  } else if (shape_name == "Top-Heavy") {
+    return(dbeta(z, 7, 3))
+  } else if (shape_name == "Bottom-Heavy") {
+    return(dbeta(z, 2, 8))
+  } else if (shape_name == "Symmetric") {
+    return(dbeta(z, 5, 5))
+  } else if (shape_name == "High-Symmetric") {
+    return(dbeta(z, 7, 5))
+  } else if (shape_name == "Top-Bottom (Bimodal)") {
+    # Somme de deux betas pour les deux pics
+    return(dbeta(z, 4, 20) + dbeta(z, 20, 4) + 2)
+  } else if (shape_name == "Top-Peak") {
+    # Pic très haut + base constante
+    return(dbeta(z, 8, 2) + 1) 
+  } else if (shape_name == "Extreme-Bottom") {
+    return(dbeta(z, 1.1, 15))
+  } else if (shape_name == "Low-Symmetric") {
+    return(dbeta(z, 3, 5))
+  } else {
+    return(rep(0, length(z)))
+  }
+}
+
+# 2. Génération des données pour le plot
+z_seq <- seq(0, 1, length.out = 100) # Haute résolution
+shapes_list <- c("Top-Peak", "Top-Heavy", "Uniform", "High-Symmetric", "Symmetric", 
+                 "Top-Bottom (Bimodal)", "Low-Symmetric", "Bottom-Heavy", "Extreme-Bottom")
+
+df_theo_profiles <- map_dfr(shapes_list, function(s) {
+  lad <- get_theo_profile(z_seq, s)
+  # Normalisation : On veut que l'aire sous la courbe soit visuellement comparable
+  # (Densité Relative)
+  lad_rel <- lad / mean(lad) 
+  
+  data.frame(
+    Z_Rel = z_seq,
+    LAD_Rel = lad_rel,
+    Shape = factor(s, levels = shapes_list) # Ordonné du haut vers le bas
+  )
+})
+
+# 3. Création du Graphique
+p_theo <- ggplot(df_theo_profiles, aes(x = LAD_Rel, y = Z_Rel, color = Shape)) +
+  # L'aire remplie (plus joli pour un profil)
+  geom_ribbon(aes(xmin = 0, xmax = LAD_Rel, fill = Shape), alpha = 0.3, color = NA) +
+  # La ligne de contour
+  geom_path(size = 1.2) +
+  
+  # Facetting pour avoir les 8 boîtes
+  facet_wrap(~Shape, ncol = 3) +
+  
+  # Esthétique
+  scale_color_viridis_d(option = "turbo") +
+  scale_fill_viridis_d(option = "turbo") +
+  scale_y_continuous(breaks = c(0, 0.5, 1), labels = c("Sol", "0.5H", "Haut")) +
+  # scale_x_continuous(breaks = NULL) + # On enlève les chiffres de l'axe X (c'est du relatif)
+  # +
+  scale_x_continuous(breaks = c(0, 5, 10)) +
+  
+  labs(title = "Profils Verticaux Théoriques (MuSICA)",
+       x = "Densité Foliaire Relative",
+       y = "Hauteur Relative (z/H)") +
+  
+  theme_bw() +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "white", color = "grey80"),
+        strip.text = element_text(face = "bold", size = 10),
+        axis.text.y = element_text(size = 8),
+        axis.title = element_text(size = 11))
+
+# Affichage
+p_theo
+```
+
+```{r}
+#| message: false
+
+# 1. Chargement Brut
+if(file.exists(lidar_file)) {
+  df_lad_raw <- read.csv(lidar_file) %>%
+    filter(!id_plot %in% ids_to_remove)
+} else { stop("Fichier LiDAR introuvable") }
+
+# 2. Transformation Wide -> Long (Nécessaire pour le traitement)
+df_lad_long <- df_lad_raw %>%
+  pivot_longer(cols = starts_with("h_"), names_to = "z_char", values_to = "lad") %>%
+  mutate(z = as.numeric(gsub("h_", "", z_char))) %>%
+  filter(lad > 0) %>% # On ne garde que la végétation existante
+  arrange(id_plot, z)
+
+# 3. Chargement Métriques (PAI, Hauteur)
+if(file.exists(metrics_file)) {
+  df_metrics <- read.csv(metrics_file) %>%
+    filter(!id_plot %in% ids_to_remove) # id_plot, pai, height_mean
+}
+```
+
+```{r}
+#| label: kmeans-analysis
+#| message: false
+
+# A. PRÉPARATION DES DÉCILES (Approche Relative "Shape")
+# -----------------------------------------------------
+df_deciles <- df_lad_long %>%
+  group_by(id_plot) %>%
+  mutate(
+    H_canopy = max(z[lad > 1e-7], na.rm = TRUE),
+    z_rel = (z - min(z)) / (max(z) - min(z)), # Hauteur relative 0-1
+    lad_rel = lad / sum(lad)                  # Densité relative (Somme=1)
+  ) %>%
+  mutate(
+    Decile = cut(z_rel, breaks = seq(0, 1, 0.1), labels = 1:10, include.lowest = TRUE)
+  ) %>%
+  group_by(id_plot, Decile) %>%
+  summarise(LAD_Prop = sum(lad_rel), .groups = "drop") %>%
+  complete(id_plot, Decile, fill = list(LAD_Prop = 0)) %>%
+  group_by(id_plot) %>%
+  mutate(LAD_Prop = LAD_Prop / sum(LAD_Prop)) %>% # Renormalisation finale
+  ungroup()
+
+# Matrice pour K-Means
+df_matrix <- df_deciles %>%
+  select(id_plot, Decile, LAD_Prop) %>%
+  pivot_wider(names_from = Decile, values_from = LAD_Prop, names_prefix = "D") %>%
+  column_to_rownames("id_plot")
+
+# B. K-MEANS (k=5 pour comparer aux archétypes)
+# -----------------------------------------------------
+set.seed(42)
+k_final <- 5
+km_res <- kmeans(df_matrix, centers = k_final, nstart = 50)
+
+df_clusters <- data.frame(
+  id_plot = names(km_res$cluster),
+  Cluster_Kmeans = as.factor(km_res$cluster)
+)
+
+# Visualisation des Profils Moyens par Cluster
+cluster_centers <- df_deciles %>%
+  left_join(df_clusters, by = "id_plot") %>%
+  group_by(Cluster_Kmeans, Decile) %>%
+  summarise(Mean_LAD = mean(LAD_Prop), .groups = "drop") %>%
+  mutate(Decile_Num = as.numeric(Decile))
+
+# On garde ce dataframe pour la Figure 2
+```
+
+```{r}
+#| label: pearson-matching
+
+get_best_match <- function(real_z, real_lad) {
+  # Normalisation
+  h_max <- max(real_z)
+  if(h_max == 0 || sum(real_lad) == 0) return(data.frame(Best_Shape="Unknown", Score=0))
+  
+  rel_z <- real_z / h_max
+  rel_lad <- real_lad / sum(real_lad)
+  
+  # Interpolation
+  grid_z <- seq(0, 1, length.out=100)
+  prof_interp <- approx(rel_z, rel_lad, xout=grid_z, rule=2)$y 
+  prof_interp[is.na(prof_interp)] <- 0
+  
+  # Bibliothèque de Formes Théoriques
+  shapes_lib <- list(
+    "uniform"          = rep(1, 100),
+    "top_heavy"        = dbeta(grid_z, 7, 3),
+    "bottom_heavy"     = dbeta(grid_z, 2, 8),
+    "high-symmetric"   = dbeta(grid_z, 7, 5),
+    "symmetric"        = dbeta(grid_z, 5, 5),
+    "top_bottom_heavy" = dbeta(grid_z, 4, 20) + dbeta(grid_z, 20, 4) + 2,
+    "top_peak_uniform" = dbeta(grid_z, 8, 2) + 1,
+    "extreme_bottom"   = dbeta(grid_z, 1.1, 15),
+    "low_symmetric"    = dbeta(grid_z, 3, 5)
+  )
+  
+  # Corrélation
+  scores <- sapply(shapes_lib, function(s) cor(prof_interp, s))
+  best <- names(scores)[which.max(scores)]
+  
+  return(data.frame(Best_Shape = best, Score = max(scores, na.rm=TRUE)))
+}
+
+# Application
+plot_shapes_theory <- df_lad_long %>%
+  group_by(id_plot) %>%
+  summarise(Match = list(get_best_match(z, lad)), .groups="drop") %>%
+  unnest(Match)
+
+# FUSION FINALE DES CARACTÉRISTIQUES PLOTS
+df_plots_final <- df_metrics %>%
+  left_join(df_clusters, by="id_plot") %>%       # Le Cluster K-means (Data-Driven)
+  left_join(plot_shapes_theory, by="id_plot")     # Le Matching Théorique (Theory-Driven)
+```
+
+```{r}
+#| label: load-netcdf-sims
+#| cache: false
+
+cache_file <- "data_musica_final_cache.rds"
+
+if (file.exists(cache_file)) {
+  message("--> Chargement rapide depuis le cache RDS...")
+  list_data <- readRDS(cache_file)
+  df_sensi_hourly <- list_data$sensi
+  df_valid_hourly <- list_data$valid
+  df_macro_hourly <- list_data$macro
+  
+} else {
+  message("--> Lecture des NetCDFs (Mode Robust)...")
+  
+  # --- A. MACROCLIMAT (IGN) ---
+  # (Code inchangé car il fonctionne généralement bien si le fichier est là)
+  ign <- read.table(ign_file, sep = ";", header = TRUE, stringsAsFactors = FALSE, fileEncoding = "ISO-8859-1")
+  df_macro_hourly <- data.frame()
+  for (d in date_seq) {
+    tmp <- ign %>%
+      filter(Date == format(as.Date(d), "%d/%m/%Y"), Code.placette == "CHS 41") %>%
+      mutate(time = as.POSIXct(paste(Date, sprintf("%04d", Heure..TU.)), format = "%d/%m/%Y %H%M", tz = "UTC")) %>%
+      rename(Tair_macro = Température.instantanée...C.) %>%
+      select(time, Tair_macro)
+    df_macro_hourly <- bind_rows(df_macro_hourly, tmp)
+  }
+
+  # --- B. SIMULATIONS FACTORIELLES (SENSITIVITY) ---
+  h_vec <- c(10, 20, 30, 40)
+  c_vec <- c(0.5, 0.6, 0.7, 0.8, 0.9, 1) 
+  l_vec <- 1:8
+  s_vec <- shape_order
+  
+  df_list <- list()
+  counter <- 0
+  
+  message("Démarrage boucle Sensitivity...")
+  
+  for(h in h_vec) {
+    for(s in s_vec) {
+      for(c in c_vec) {
+        for(l in l_vec) {
+          
+          nc_path <- file.path(out_dir, paste0("height_", h, "m"), s, 
+                               paste0("clump_", c), paste0("lai_", l), 
+                               "musica_out_ERA5_synthetic.nc")
+          
+          if(file.exists(nc_path)) {
+            # 1. Ouverture explicite
+            nc <- try(nc_open(nc_path), silent = FALSE) # On veut voir l'erreur
+            
+            if(!inherits(nc, "try-error")) {
+              # 2. Extraction avec l'objet nc ouvert
+              raw_data <- try(get_variable(nc, "Tair_z"), silent = FALSE)
+              nc_close(nc) # Fermeture immédiate
+              
+              if(!inherits(raw_data, "try-error") && !is.null(raw_data)) {
+                tmp_df <- raw_data %>%
+                  filter(nair == 1) %>% 
+                  mutate(Tair_micro = Tair_z - 273.15) %>%
+                  filter(as.Date(time) %in% date_seq) %>%
+                  mutate(time = time - hours(2)) %>%
+                  mutate(time = floor_date(time, "hour")) %>%
+                  mutate(time = force_tz(time, "UTC")) %>%
+                  group_by(time) %>%
+                  summarise(Tair_micro = mean(Tair_micro, na.rm=TRUE), .groups="drop") %>%
+                  mutate(Height=h, Shape=s, Clump=c, LAI=l)
+                
+                counter <- counter + 1
+                df_list[[counter]] <- tmp_df
+              }
+            }
+          }
+        }
+      }
+    }
+    # Petit indicateur de progrès
+    print(paste("Hauteur", h, "traitée. Simulations cumulées :", counter))
+  }
+  
+  if(length(df_list) > 0) {
+    df_sensi_hourly <- bind_rows(df_list)
+  } else {
+    warning("ATTENTION: Aucune simulation de sensibilité chargée !")
+    df_sensi_hourly <- data.frame()
+  }
+  
+  # --- C. SIMULATIONS VALIDATION (PROFILS REELS) ---
+  message("Démarrage boucle Validation...")
+  files_valid <- list.files(valid_dir, pattern = "*.nc", full.names = TRUE)
+  
+  if(length(files_valid) == 0) warning(paste("Aucun fichier trouvé dans", valid_dir))
+  
+  df_valid_list <- list()
+  
+  for(f in files_valid) {
+    # Extraction ID (Caractère)
+    pid <- str_extract(basename(f), "(?<=pt_).+(?=\\.nc)")
+    
+    # 1. Ouverture explicite
+    nc <- try(nc_open(f), silent = FALSE)
+    
+    if(!inherits(nc, "try-error")) {
+      # 2. Extraction
+      raw_data <- try(get_variable(nc, "Tair_z"), silent = FALSE)
+      nc_close(nc)
+      
+      if(!inherits(raw_data, "try-error") && !is.null(raw_data)) {
+        tmp <- raw_data %>%
+          filter(nair == 1) %>%
+          mutate(Tair_sim = Tair_z - 273.15) %>%
+          filter(as.Date(time) %in% date_seq) %>%
+          mutate(time = time - hours(2)) %>% 
+          mutate(time = floor_date(time, "hour")) %>%
+          mutate(time = force_tz(time, "UTC")) %>%
+          group_by(time) %>%
+          summarise(Tair_sim = mean(Tair_sim, na.rm=TRUE), .groups="drop") %>%
+          mutate(id_plot = pid)
+        
+        df_valid_list[[length(df_valid_list)+1]] <- tmp
+      }
+    }
+  }
+  
+  if(length(df_valid_list) > 0) {
+    df_valid_hourly <- bind_rows(df_valid_list) %>%
+    filter(!id_plot %in% ids_to_remove)
+  } else {
+    warning("ATTENTION: Aucune simulation de validation chargée !")
+    df_valid_hourly <- data.frame()
+  }
+  
+  # Sauvegarde si on a des données
+  if(nrow(df_sensi_hourly) > 0) {
+    saveRDS(list(sensi=df_sensi_hourly, valid=df_valid_hourly, macro=df_macro_hourly), cache_file)
+    message("Cache sauvegardé.")
+  }
+}
+```
+
+```{r}
+# 1. Dataset Physique (Sensibilité)
+df_physic <- df_sensi_hourly %>%
+  inner_join(df_macro_hourly, by="time") %>%
+  mutate(date = as.Date(time)) %>%
+  group_by(Height, Shape, Clump, LAI, date) %>%
+  summarise(
+    T_Macro_Max = max(Tair_macro),
+    T_Micro_Max = max(Tair_micro),
+    T_Macro_Min = min(Tair_macro),
+    T_Micro_Min = min(Tair_micro),
+    Delta_Tmax  = T_Micro_Max - T_Macro_Max,
+    Delta_Tmin  = T_Micro_Min - T_Macro_Min,
+    log_slope   = log(coef(lm(Tair_micro ~ Tair_macro))[2]),
+    .groups     = "drop"
+  )
+
+# 2. Dataset Validation (Obs vs Sim)
+df_hobo <- read.csv(hobo_file) %>%
+  mutate(datetime = as.POSIXct(datetime, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")) %>%
+  filter(position_sensor == "a", as.Date(datetime) %in% date_seq) %>%
+  group_by(id_plot, time = floor_date(datetime, "hour")) %>%
+  summarise(Tair_obs = mean(t_hobo, na.rm = TRUE), .groups = "drop")
+
+df_val_final <- df_hobo %>%
+  inner_join(df_valid_hourly, by=c("id_plot", "time")) %>%
+  inner_join(df_macro_hourly, by="time") %>%
+  left_join(df_plots_final, by="id_plot") %>% # Ajout Clusters & Shapes
+  mutate(Error = Tair_sim - Tair_obs)
+```
+
+```{r}
+#| label: gamm-model-bam-scat
+#| message: false
+
+# Préparation des données pour BAM
+df_stats <- df_physic %>%
+  mutate(
+    LAI_Scaled = scale(LAI),
+    Clump_Scaled = scale(Clump),
+    Height_Scaled = scale(Height),
+    Shape = factor(Shape, levels = shape_order),
+    date_factor = as.factor(date) # Requis pour s(..., bs='re') optimisé
+  )
+
+# --- MODÈLES GAMM (BAM + SCAT) ---
+
+# 1. TMAX (Jour)
+gam_tmax <- bam(Delta_Tmax ~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs="re"), 
+                data = df_stats, 
+                family = scat(),  # Famille Scaled-t (Robuste aux queues lourdes)
+                method = "fREML", 
+                discrete = TRUE)  # Optimisation vitesse pour gros datasets
+gam.check(gam_tmax)
+
+# 2. TMIN (Nuit)
+gam_tmin <- bam(Delta_Tmin ~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs="re"), 
+                data = df_stats, 
+                family = scat(),
+                method = "fREML", 
+                discrete = TRUE)
+
+# 3. PENTE
+gam_slope <- bam(log_slope ~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs="re"), 
+                 data = df_stats, 
+                 family = scat(),
+                 method = "fREML", 
+                 discrete = TRUE)
+
+# 4. MAX MICRO
+gam_max_micro <- bam(T_Micro_Max ~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs="re"), 
+                 data = df_stats, 
+                 family = scat(),
+                 method = "fREML", 
+                 discrete = TRUE)
+
+# 5. MIN MICRO (Risque de Gel)
+gam_min_micro <- bam(T_Micro_Min ~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs="re"), 
+                     data = df_stats, 
+                     family = scat(),
+                     method = "fREML", 
+                     discrete = TRUE)
+
+# Diagnostic visuel (optionnel)
+# par(mfrow=c(2,2)); gam.check(gam_tmax)
+```
+
+```{r}
+#| label: fig-2-structure
+#| fig-cap: "Figure 2 : Typologie réelle. (B) Profils moyens des 5 clusters identifiés (K-Means). (C) Fréquence de ces architectures en forêt."
+
+# Préparation Panneau B : Profils Moyens (Données issues de l'étape K-Means)
+# Assure-toi que 'cluster_centers' est disponible depuis l'étape 1.2
+p_profiles <- ggplot(cluster_centers, aes(x = Mean_LAD, y = Decile_Num, color = Cluster_Kmeans)) +
+  geom_path(size = 1.5) +
+  scale_y_continuous(breaks = 1:10, name = "Hauteur Relative (Décile)") +
+  scale_x_continuous(name = "Densité Relative (LAD)") +
+  facet_wrap(~Cluster_Kmeans, nrow=1) +
+  scale_color_viridis_d(option = "turbo") +
+  theme(legend.position = "none", 
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank()) +
+  labs(subtitle = "B. Profils Moyens (K-Means)")
+
+# Préparation Panneau C : Histogramme de Fréquence
+freq_clusters <- df_clusters %>%
+  count(Cluster_Kmeans) %>%
+  mutate(Freq = n / sum(n))
+
+p_hist <- ggplot(freq_clusters, aes(x = Cluster_Kmeans, y = Freq, fill = Cluster_Kmeans)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Freq, accuracy=1)), vjust = -0.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(subtitle = "C. Fréquence des Archétypes", x = "Cluster", y = "Fréquence") +
+  theme(legend.position = "none")
+
+# Assemblage
+p_profiles / p_hist + plot_layout(heights = c(2, 1))
+```
+
+```{r}
+#| label: fig-3-composite
+#| fig-cap: "Hiérarchie des performances thermiques : Physique (A) et Statistique (B)."
+
+# A. Prédictions
+pred_curves <- ggpredict(gam_tmax, terms = c("LAI_Scaled [all]", "Shape")) %>%
+  as.data.frame() %>%
+  mutate(LAI_Real = (x * sd(df_physic$LAI)) + mean(df_physic$LAI))
+
+p_a <- ggplot(pred_curves, aes(x = LAI_Real, y = predicted, color = group)) +
+  geom_line(size = 1.2) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "A. Saturation (Physique)", x = "LAI", y = "Refroidissement (°C)") +
+  theme(legend.position = "none")
+
+# B. Coefficients
+stats_shape <- tidy(gam_tmax, parametric = TRUE, conf.int = TRUE) %>%
+  filter(grepl("Shape", term)) %>%
+  mutate(term = gsub("Shape", "", term))
+
+p_b <- ggplot(stats_shape, aes(x = estimate, y = reorder(term, estimate), color = term)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_pointrange(aes(xmin = conf.low, xmax = conf.high)) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "B. Impact (Statistique)", x = "Est. GAM", y = NULL) +
+  theme(legend.position = "none")
+
+p_a + p_b + plot_layout(widths = c(1.5, 1))
+```
+
+```{r}
+#| label: fig-4-matrix
+#| fig-cap: "L'effet 'Gruyère' : Effondrement du refroidissement pour les couverts discontinus."
+
+df_mat_viz <- df_physic %>%
+  group_by(LAI, Height, Clump, Shape) %>%
+  summarise(Mean_DT = mean(Delta_Tmax), .groups="drop") %>%
+  filter(Clump %in% c(0.5, 1))
+
+sub_shapes <- c("top_peak_uniform", "extreme_bottom", "uniform")
+
+ggplot(df_mat_viz %>% filter(Shape %in% sub_shapes), 
+       aes(x = LAI, y = Mean_DT, color = Shape)) +
+  geom_line(size = 1) +
+  facet_grid(Height ~ Clump, labeller = label_both) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Figure 4 : Matrice Structurelle", 
+       subtitle = "Lignes : Hauteur / Colonnes : Clumping")
+```
+
+```{r}
+#| label: fig-5-tradeoff
+#| fig-cap: "Compromis Écologiques : Le profil idéal (Haut-Gauche) dépend de la saison."
+
+df_tradeoff <- df_physic %>%
+  # filter(LAI >= 4) %>%
+  group_by(Shape) %>%
+  summarise(
+    Summer = mean(Delta_Tmax),
+    Winter = mean(Delta_Tmin),
+    Stability = 1/abs(cov(Delta_Tmax, T_Macro_Max)) # Proxy Stabilité
+  )
+
+ggplot(df_tradeoff, aes(x = Summer, y = Winter)) +
+  annotate("rect", xmin = -Inf, xmax = mean(df_tradeoff$Summer), 
+           ymin = mean(df_tradeoff$Winter), ymax = Inf, fill = "green", alpha = 0.1) +
+  geom_hline(yintercept = 0, linetype="dashed") + 
+  geom_vline(xintercept = 0, linetype="dashed") +
+  geom_point(aes(color = Shape, size = Stability), alpha = 0.8) +
+  geom_text_repel(aes(label = Shape), fontface="bold", box.padding = 0.5, max.overlaps = 20) +
+  scale_color_viridis_d(option = "turbo") +
+  scale_size(range = c(3, 10)) +
+  labs(title = "Figure 5 : Compromis Canicule vs Gel",
+       x = "Refroidissement Été (Delta Tmax)", 
+       y = "Protection Hiver (Delta Tmin)") +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: fig-6-valid-bias
+#| fig-cap: "Validation Globale (A) et Biais Structurels par Cluster K-Means (B)."
+
+# A. Validation Globale
+p_val <- ggplot(df_val_final, aes(x = Tair_obs, y = Tair_sim)) +
+  geom_bin2d(bins = 60) +
+  scale_fill_viridis_c(option = "magma", trans="log") +
+  geom_abline(slope = 1, intercept = 0, color = "white", linetype = "dashed") +
+  labs(title = "A. Validation Globale", x = "Obs", y = "Sim") +
+  theme(legend.position = "none")
+
+# B. Biais par Cluster K-Means
+p_bias <- ggplot(df_val_final, aes(x = Cluster_Kmeans, y = Error, fill = Cluster_Kmeans)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(title = "B. Biais par Cluster", x = "Type Réel (K-Means)", y = "Erreur (°C)")
+
+p_val + p_bias
+```
+
+```{r}
+#| label: fig-s1-composite-pearson
+#| fig-cap: "Figure S1 : Validation du Matching Structurel. (A) Superposition des profils (Noir: Réel / Rouge: Théorique). (B) Matrice de Corrélation Pearson (Plus c'est clair/jaune, meilleur est le match)."
+#| fig-height: 10
+
+# A. Récupération des données réelles
+df_s1_real <- cluster_centers %>%
+  rename(LAD = Mean_LAD, Z = Decile_Num) %>%
+  mutate(Z = Z/10) 
+
+# B. Librairie de formes (Fonction unique)
+# Note : Pour Pearson, la normalisation (sum=1) n'est pas strictement nécessaire 
+# mathématiquement, mais on la garde pour la cohérence des plots.
+get_shapes_lib <- function(grid_z) {
+  list(
+    "uniform"          = rep(1, length(grid_z)), # SD = 0 -> Pearson sera NA
+    "top_heavy"        = dbeta(grid_z, 8, 2.5) + 2,
+    "bottom_heavy"     = dbeta(grid_z, 2.5, 8),
+    "symmetric"        = dbeta(grid_z, 5, 5),
+    "top_bottom_heavy" = dbeta(grid_z, 4, 20) + dbeta(grid_z, 20, 5) + 2,
+    "top_peak_uniform" = dbeta(grid_z, 15, 2) + 2,
+    "extreme_bottom"   = dbeta(grid_z, 1.2, 15) + 0.05,
+    "low_symmetric"    = dbeta(grid_z, 3, 5)
+  )
+}
+
+# C. Fonction de calcul des scores (PEARSON R)
+get_all_pearson <- function(lad_vec) {
+  grid_z <- seq(0.1, 1, 0.1)
+  shapes <- get_shapes_lib(grid_z)
+  
+  # Calcul de corrélation
+  scores <- sapply(shapes, function(s) cor(lad_vec, s))
+  
+  # CORRECTION CRITIQUE : Uniforme renvoie souvent NA (car écart-type nul)
+  # On remplace NA par 0 pour ne pas casser le code.
+  # Cela signifie : "Si c'est plat, on considère qu'il n'y a pas de corrélation de forme"
+  scores[is.na(scores)] <- 0
+  
+  return(scores)
+}
+
+# Calcul de TOUS les scores pour chaque cluster
+scores_df <- df_s1_real %>%
+  group_by(Cluster_Kmeans) %>%
+  summarise(Scores = list(get_all_pearson(LAD)), .groups="drop") %>%
+  unnest_wider(Scores)
+
+# Identification du Meilleur Match (Celui qui a le R max)
+matches_s1 <- scores_df %>%
+  pivot_longer(cols = -Cluster_Kmeans, names_to = "Shape", values_to = "R") %>%
+  group_by(Cluster_Kmeans) %>%
+  slice_max(R, n=1, with_ties = FALSE) %>% # Prend le max
+  rename(Best_Shape = Shape) %>%
+  select(Cluster_Kmeans, Best_Shape)
+
+# Génération des courbes théoriques haute résolution
+grid_z_fine <- seq(0, 1, length.out = 100)
+shapes_fine <- get_shapes_lib(grid_z_fine)
+scale_factor <- length(grid_z_fine) / 10 
+
+df_s1_theory <- data.frame()
+
+for(i in 1:nrow(matches_s1)) {
+  s_name <- matches_s1$Best_Shape[i]
+  c_name <- matches_s1$Cluster_Kmeans[i]
+  
+  # Récupération et Normalisation pour affichage visuel
+  lad_raw <- shapes_fine[[s_name]]
+  lad <- (lad_raw / sum(lad_raw)) * scale_factor
+  
+  df_s1_theory <- bind_rows(df_s1_theory, 
+                            data.frame(Z=grid_z_fine, LAD=lad, 
+                                       Cluster_Kmeans=c_name, 
+                                       Shape_Name=s_name))
+}
+
+p_profiles <- ggplot() +
+  geom_path(data=df_s1_real, aes(x=LAD, y=Z), color="black", size=1.5) +
+  geom_path(data=df_s1_theory, aes(x=LAD, y=Z), color="red", linetype="dashed", size=1.2) +
+  facet_wrap(~Cluster_Kmeans, scales="free_x", nrow=1) +
+  labs(subtitle = "A. Validation Visuelle (Noir : Réel / Rouge : Théorique)",
+       x = "Densité (LAD)", y = "Hauteur Relative (Z)")
+
+scores_long <- scores_df %>%
+  pivot_longer(cols = -Cluster_Kmeans, names_to = "Theoretical_Shape", values_to = "R")
+
+p_heatmap <- ggplot(scores_long, aes(x = Cluster_Kmeans, y = Theoretical_Shape, fill = R)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(R, 2)), color = "white", size = 3, fontface="bold") +
+  # Echelle Standard : Jaune/Clair = Forte Corrélation (1)
+  scale_fill_viridis_c(option = "magma", limits = c(-1, 1), name = "Pearson R") +
+  labs(subtitle = "B. Qualité du Matching (Corrélation - Plus c'est clair, meilleur est le match)",
+       x = "Cluster Réel (K-Means)", 
+       y = "Forme Théorique") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(face="bold"),
+        axis.text.y = element_text(face="bold"),
+        panel.grid = element_blank())
+
+p_profiles / p_heatmap + 
+  plot_layout(heights = c(1, 1.2))
+```
+
+```{r}
+#| label: fig-s2-beta
+#| fig-cap: "Figure S2 : Espace des Paramètres Bêta. Les points gris sont les arbres réels, les losanges colorés sont les formes théoriques."
+
+# 1. Fit Beta sur les profils réels (Déciles)
+fit_beta <- function(lad, z) {
+  # Optimisation simple pour trouver alpha/beta
+  fn <- function(p) sum((lad - dbeta(z, p[1], p[2])/sum(dbeta(z, p[1], p[2])))^2)
+  opt <- try(optim(c(2,2), fn), silent=TRUE)
+  if(inherits(opt, "try-error")) return(c(NA, NA))
+  return(opt$par)
+}
+
+real_betas <- df_deciles %>%
+  group_by(id_plot) %>%
+  mutate(Z_mid = (as.numeric(Decile)-0.5)/10) %>%
+  summarise(Params = list(fit_beta(LAD_Prop, Z_mid)), .groups="drop") %>%
+  mutate(alpha = map_dbl(Params, 1), beta = map_dbl(Params, 2)) %>%
+  filter(alpha > 0, beta > 0, alpha < 20, beta < 20) # Filtrage outliers
+
+# 2. Paramètres Théoriques (Extraits de TA liste)
+theo_betas <- data.frame(
+  Label = c("Top-Heavy", "Bottom-Heavy", "Symmetric", "Low-Sym", "Extr-Bottom", "Top-Peak"),
+  alpha = c(6,   2.5, 5, 3, 1.2, 15),
+  beta  = c(2.5, 6,   5, 5, 15,  2)
+)
+
+# B. Cas Spécial : Uniforme (1, 1 par définition)
+theo_betas <- rbind(theo_betas, data.frame(Label="Uniform", alpha=1, beta=1))
+
+# C. Cas Spécial : Top-Bottom (Bimodal) -> On fit une beta "Effective"
+# On génère le profil bimodal théorique
+z_sim <- seq(0.01, 0.99, length.out=100)
+lad_sim <- dbeta(z_sim, 4, 20) + dbeta(z_sim, 20, 5) # La formule du Top-Bottom
+# On fit un alpha/beta unique dessus
+tb_params <- fit_beta(lad_sim, z_sim)
+
+theo_betas <- rbind(theo_betas, 
+                    data.frame(Label="Top-Bottom", alpha=tb_params[1], beta=tb_params[2]))
+
+# 3. Plot
+ggplot() +
+  geom_point(data=real_betas, aes(x=alpha, y=beta), color="grey70", alpha=0.6, size=2) +
+  geom_text_repel(data=real_betas, aes(x=alpha, y=beta, label=id_plot), 
+                  size=3, color="grey40", max.overlaps = 100) +
+  geom_point(data=theo_betas, aes(x=alpha, y=beta, color=Label), size=6, shape=18) +
+  geom_text_repel(data=theo_betas, aes(x=alpha, y=beta, label=Label), 
+                  box.padding = 0.6, fontface="bold") +
+  scale_x_log10(breaks = c(0.1, 0.5, 1, 2, 5, 10, 20)) + 
+  scale_y_log10(breaks = c(0.1, 0.5, 1, 2, 5, 10, 20)) +
+  scale_color_viridis_d(option="turbo") +
+  labs(title = "Figure S2 : Couverture de l'Espace des Paramètres",
+       x = "Alpha (Concentration Haut)", y = "Beta (Concentration Bas)") +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: fig-s3-zoom
+#| fig-cap: "Figure S3 : Dynamique Temporelle. Comparaison Obs/Sim sur une semaine chaude pour un représentant de chaque architecture identifiée."
+
+# 1. Définition de la période (Semaine chaude de Juillet)
+start_zoom <- as.POSIXct("2021-07-16", tz="UTC")
+end_zoom   <- as.POSIXct("2021-07-23", tz="UTC")
+
+# 2. Sélection automatique : Un plot représentatif par type de Forme
+selected_plots <- df_val_final %>%
+  filter(!is.na(Best_Shape)) %>%       # Sécurité
+  group_by(Best_Shape) %>%
+  slice(1) %>%                         # Prend le 1er plot de chaque groupe
+  pull(id_plot)
+
+# 3. Filtrage des données
+df_zoom <- df_val_final %>%
+  filter(id_plot %in% selected_plots) %>%
+  filter(time >= start_zoom & time <= end_zoom)
+
+# 4. Plot Multi-Facettes
+ggplot(df_zoom, aes(x=time)) +
+  # Observations (Ligne pleine noire)
+  geom_line(aes(y=Tair_obs, color="Observé (HOBO)"), size=0.8) +
+  
+  # Simulations (Ligne pointillée rouge)
+  geom_line(aes(y=Tair_sim, color="Simulé (MuSICA)"), linetype="dashed", size=0.8) +
+  
+  # Facette par Forme (avec l'ID du plot en sous-titre)
+  facet_wrap(~ paste0(Best_Shape, "\n(Plot ", id_plot, ")"), 
+             scales="free_y", ncol=1) + # ncol=3 pour un affichage équilibré
+  
+  scale_color_manual(values=c("black", "red")) +
+  
+  labs(title = "Figure S3 : Performance du modèle par Architecture",
+       subtitle = "Zoom sur la dynamique jour/nuit (16-23 Juillet 2021)",
+       x = NULL, 
+       y = "Température (°C)",
+       color = NULL) +
+  
+  theme_bw() +
+  theme(legend.position = "top",
+        strip.text = element_text(size=10, face="bold"))
+```
+
+```{r}
+#| label: tbl-s4-stats
+
+# Note: sjPlot gère parfois mal les objets 'bam' avec famille 'scat'.
+# Si le tableau ne s'affiche pas, utiliser summary(gam_tmax)
+tryCatch({
+  tab_model(gam_tmax, gam_tmin, gam_slope, gam_max_micro,
+            dv.labels = c("Delta Tmax (GAM)", "Delta Tmin (GAM)", "Log Slope (GAM)", "Max Micro (GAM)"),
+            show.ci = FALSE, show.p = TRUE, 
+            title = "Figure S4 : Résultats Détaillés des Modèles (GAMM)")
+}, error = function(e) { message("Erreur affichage tableau sjPlot (Probable incompatibilité BAM/Scat)") })
+```
+
+```{r}
+#| label: fig-s5-elbow
+#| fig-cap: "Figure S5 : Méthode du Coude pour la détermination du nombre optimal de clusters."
+
+# 1. Calcul de la variance intra-cluster (WSS) pour k = 2 à 10
+set.seed(42)
+k_range <- 2:10
+wss <- sapply(k_range, function(k) {
+  kmeans(df_matrix, centers = k, nstart = 50)$tot.withinss
+})
+
+df_elbow <- data.frame(k = k_range, wss = wss)
+
+# 2. Plot
+ggplot(df_elbow, aes(x = k, y = wss)) +
+  geom_line(color = "black", size = 1) +
+  geom_point(color = "red", size = 3) +
+  scale_x_continuous(breaks = k_range) +
+  # Cercle pour mettre en évidence le choix k=5
+  annotate("point", x = 5, y = wss[which(k_range == 5)], 
+           color = "blue", size = 5, shape = 1, stroke = 2) +
+  annotate("text", x = 5.5, y = wss[which(k_range == 5)], 
+           label = "Choix k=5", color = "blue", hjust = 0, vjust = -1) +
+  labs(title = "Figure S5 : Choix du nombre de Clusters (Elbow Method)",
+       subtitle = "Le point d'inflexion suggère que 5 archétypes suffisent pour décrire la variance.",
+       x = "Nombre de Clusters (k)", 
+       y = "Somme des Carrés Intra-Cluster (WSS)")
+```
+
+```{r}
+#| label: variance-partitioning-all
+#| fig-cap: "Figure S6 : Hiérarchie des facteurs structurels pour l'ensemble des métriques microclimatiques."
+
+# 1. Fonction Générique de Partitionnement
+# Elle prend le nom de la variable réponse (y_col) et le nom pour l'affichage (label)
+analyze_drivers <- function(data, y_col, label) {
+  
+  message(paste("Traitement de :", label, "..."))
+  
+  # Formule de base pour la météo (Effet aléatoire seul)
+  f_weather <- as.formula(paste(y_col, "~ s(date_factor, bs='re')"))
+  
+  # Fonction R2 interne adaptée
+  calc_r2 <- function(form) {
+    # BAM avec SCAT (Robuste)
+    m <- bam(form, data = data, family = scat(), method = "fREML", discrete = TRUE, nthreads = 4)
+    # Ratio Variance Pred / Variance Obs
+    var_pred <- var(predict(m, type = "response"), na.rm = TRUE)
+    var_obs  <- var(data[[y_col]], na.rm = TRUE)
+    return(var_pred / var_obs)
+  }
+  
+  # A. Calculs des R2
+  r2_weather <- calc_r2(f_weather)
+  
+  # Formules pour chaque facteur (+ Météo)
+  f_lai    <- as.formula(paste(y_col, "~ s(LAI_Scaled, k=5) + s(date_factor, bs='re')"))
+  f_shape  <- as.formula(paste(y_col, "~ Shape + s(date_factor, bs='re')"))
+  f_clump  <- as.formula(paste(y_col, "~ Clump_Scaled + s(date_factor, bs='re')"))
+  f_height <- as.formula(paste(y_col, "~ Height_Scaled + s(date_factor, bs='re')"))
+  
+  # Modèle Total (pour info)
+  f_total  <- as.formula(paste(y_col, "~ s(LAI_Scaled, k=5) + Shape + Clump_Scaled + Height_Scaled + s(date_factor, bs='re')"))
+  
+  # B. Exécution
+  r2_lai_w    <- calc_r2(f_lai)
+  r2_shape_w  <- calc_r2(f_shape)
+  r2_clump_w  <- calc_r2(f_clump)
+  r2_height_w <- calc_r2(f_height)
+  r2_total    <- calc_r2(f_total)
+  
+  # C. Synthèse
+  res <- data.frame(
+    Metric = label,
+    R2_Weather = r2_weather,
+    R2_Total_Model = r2_total,
+    Factor = c("LAI (Densité)", "Shape (Forme)", "Clumping (Continuité)", "Hauteur"),
+    Variance_Added = c(
+      max(0, r2_lai_w - r2_weather),
+      max(0, r2_shape_w - r2_weather),
+      max(0, r2_clump_w - r2_weather),
+      max(0, r2_height_w - r2_weather)
+    )
+  )
+  return(res)
+}
+
+# -----------------------------------------------------------
+# 2. Exécution pour les 4 variables
+# -----------------------------------------------------------
+
+# Lancement des calculs (peut prendre 2-3 minutes)
+res_tmax  <- analyze_drivers(df_stats, "Delta_Tmax", "1. Refroidissement (Delta Tmax)")
+res_tmin  <- analyze_drivers(df_stats, "Delta_Tmin", "2. Réchauffement Noc. (Delta Tmin)")
+res_slope <- analyze_drivers(df_stats, "log_slope",  "3. Pouvoir Tampon (Log Slope)")
+res_abs   <- analyze_drivers(df_stats, "T_Micro_Max","4. Température Absolue (Tmax Micro)")
+res_min_abs <- analyze_drivers(df_stats, "T_Micro_Min", "5. Température Absolue (Tmin Micro)")
+
+# Fusion
+all_res <- bind_rows(res_tmax, res_tmin, res_slope, res_abs, res_min_abs)
+
+# -----------------------------------------------------------
+# 3. Visualisation Facettée
+# -----------------------------------------------------------
+
+# Création des labels complets pour les facettes (avec le R2 Météo inclus)
+all_res <- all_res %>%
+  mutate(Facet_Label = paste0(Metric, "\n(Météo seule : ", scales::percent(R2_Weather, 0.1), ")"))
+
+ggplot(all_res, aes(x = reorder(Factor, Variance_Added), y = Variance_Added, fill = Factor)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(Variance_Added, accuracy=0.1)), 
+            hjust = -0.1, fontface = "bold", size = 3) +
+  coord_flip() + # On tourne pour la lisibilité
+  facet_wrap(~Facet_Label, scales = "free_x", ncol = 1) +
+  scale_y_continuous(labels = scales::percent, expand = expansion(mult = c(0, 0.2))) +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(title = "Figure S6 : Hiérarchie des Facteurs Structurels",
+       subtitle = "Gain de variance expliquée par chaque facteur (au-delà de l'effet météo)",
+       y = "Variance Ajoutée", 
+       x = NULL, fill = NULL) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(size = 10, face = "bold"))
+```

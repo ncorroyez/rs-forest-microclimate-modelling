@@ -1,0 +1,231 @@
+---
+title: "Chapitre 1 -- Architecture forestiere 3D et microclimat"
+subtitle: "LiDAR x MuSICA x Shapley | Foret de Blois, ete 2021-2022"
+author: "Nathan Corroyez"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+    latex_engine: xelatex
+    fig_caption: true
+    extra_dependencies: ["float", "booktabs"]
+geometry: margin=2.5cm
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+                      fig.align="center", out.width="100%", fig.pos="H")
+library(knitr)
+```
+
+\newpage
+
+# Architecture du chapitre
+
+## Hypotheses
+
+**H1** --- Les descripteurs LiDAR (LAI, Hmax, fCover, profil LAD) determinent
+mecanistiquement le tamponnement thermique $\Delta T_{max}$ simule par MuSICA.
+LAI est le contributeur dominant.
+
+**H2** --- A LAI constant, la forme du profil LAD ne modifie pas
+$\Delta T_{max}$ moyen. H2 est un resultat nul.
+
+## Approche
+
+~400 plots cLHS x ~120 jours ete = ~48 000 observations. Forward + LOO + Shapley exact.
+Validation externe sur 53 capteurs HOBO in-situ.
+
+\newpage
+
+# Typologie structurale (FPCA + K-Means)
+
+```{r fig-clusters, fig.cap="Profil LAD moyen par cluster. Hmax et LAI = moyennes du cluster. Ruban = IQR."}
+include_graphics("outputs/figures/08_clusters_lad_profiles.png")
+```
+
+Quatre archétypes : **C1** (sparse, Hmax moy. 19m, LAI 1.27), **C2** (dense haut,
+31.5m, LAI 5.05), **C3** (dense bas, 11.1m, LAI 3.02), **C4** (intermediaire,
+21.8m, LAI 3.41).
+
+```{r fig-fpca-harm, fig.cap="Harmoniques FPCA. FPC1 (41.1pct) = magnitude ; FPC2 (30.9pct) = centre de gravite ; FPC3 (15.2pct) = bimodalite.", out.width="70%"}
+include_graphics("outputs/figures/09_fpca_harmonics.png")
+```
+
+```{r fig-fpca-recon, fig.cap="Reconstruction FPCA (3 composantes) sur 6 plots. Fidelite correcte sauf profils bimodaux (Cluster 1)."}
+include_graphics("outputs/figures/10_fpca_reconstruction.png")
+```
+
+\newpage
+
+# H1 --- Contribution des descripteurs structurels
+
+```{r fig-h1-fwd, fig.cap="H1 -- RMSE en ajout progressif. La chute Null->+LAI (1.60->0.98 degC, -38pct) domine. Le profil LAD complet n ajoute que 0.03 degC.", out.width="80%"}
+include_graphics("outputs/figures/01_h1_forward_curve.png")
+```
+
+LAI explique 38pct de la variance seul. fCover +11pct, Hmax +6pct, LAD +2pct.
+
+```{r fig-h1-rank, fig.cap="Robustesse du ranking Forward vs LOO. Shapley reconcilie les deux methodes.", out.width="85%"}
+include_graphics("outputs/figures/02_h1_ranking.png")
+```
+
+```{r fig-shapley, fig.cap="Attribution Shapley exacte (16 coalitions). Panel A : LAI 52pct, fCover 39pct, Hmax 12pct, LAD -3pct. Panel B : convergence Forward/LOO/Shapley. Panel C : treillis v(S)."}
+include_graphics("outputs/figures/02_shapley_attribution.png")
+```
+
+La valeur Shapley de LAD est negative (-3pct), stable sur 50 bootstraps (cf. A18).
+
+```{r fig-loo, fig.cap="Scatter DeltaTmax journalier -- impact d une variable degradee. LAI alone (R2=0.57) montre l ecart maximal.", out.width="90%"}
+include_graphics("outputs/figures/03_h1_loo_scatters_2x2.png")
+```
+
+```{r fig-fwd-scat, fig.cap="Ajout progressif vs reference full-real. R2 de 0.70 (+LAI) a 0.81 (+Profil LAD)."}
+include_graphics("outputs/figures/04_h1_scatters_vs_ref.png")
+```
+
+\newpage
+
+# H2 --- Effet de la forme du profil LAD
+
+```{r fig-h2-pair, fig.cap="H2 -- scatter Real vs Uniform LAD. R2=0.79, RMSE=0.73 degC, Bias=-0.02 degC. La forme redistribue spatialement mais n amplifie pas en moyenne.", out.width="65%"}
+include_graphics("outputs/figures/05_h2_paired_real_vs_uniform.png")
+```
+
+**H2 est rejetee** : la forme du profil LAD n est pas un levier de tamponnement dans MuSICA.
+
+```{r fig-h2-vert, fig.cap="Profils verticaux de DeltaTmax moyen ete par cluster (plot representatif). Tiret rouge = hauteur de canopee."}
+include_graphics("outputs/figures/06_h2_vertical_delta_by_cluster.png")
+```
+
+```{r fig-h2-3way, fig.cap="Profils verticaux DeltaT vs Uniform LAD (canicule). Ecart maximal 0.15 degC -- negligeable devant DeltaTmax total (2-5 degC)."}
+include_graphics("outputs/figures/07_h2_vertical_3way_canicule.png")
+```
+
+\newpage
+
+# Validation HOBO
+
+```{r fig-hobo-val, fig.cap="RMSE par scenario HOBO. Biais systematique +2.12 degC (ET manquante). Sigma inter-scenarios = +-0.15 degC.", out.width="90%"}
+include_graphics("outputs/figures/annex/A12_hobo_validation.png")
+```
+
+Biais interprete comme la signature de l ET absente du bilan energetique MuSICA.
+Le sigma inter-scenarios confirme que le choix structural ne change pas le biais.
+
+```{r fig-hobo-scat, fig.cap="Scatter HOBO sim vs obs, colore par cluster. Normal (R2=0.48) et Canicule (R2=0.55)."}
+include_graphics("outputs/figures/annex/A19_hobo_cluster_scatter.png")
+```
+
+\newpage
+
+# GAMM --- Role confirmatoire
+
+Le GAMM (scat(), ~48 000 obs) separe l effet structurel de la variabilite climatique
+et fournit un test nul formel pour H2. Il ne constitue pas la preuve principale.
+
+```{r fig-gamm-eff, fig.cap="Effets marginaux GAMM. LAI : forte decroissance. FPC1 : plat (confirme H2 nulle). Rad : positif (ET).", out.width="90%"}
+include_graphics("outputs/figures/annex/A10_gamm_effects.png")
+```
+
+```{r fig-gamm-var, fig.cap="3 variantes de descripteur de forme. Deviance identique (72pct) ; delta-AIC(FPC)=+4.4. NONE est optimal.", out.width="80%"}
+include_graphics("outputs/figures/annex/A10b_gamm_variants.png")
+```
+
+```{r fig-gamm-diag, fig.cap="Diagnostics GAMM. ACF quasi-blanc apres tri plot x date. scat() reduit l AIC de moitie vs Gaussien."}
+include_graphics("outputs/figures/annex/A11_gamm_residuals.png")
+```
+
+\newpage
+
+# Code --- Points cles
+
+## Configuration et flags
+
+```{r config-code, echo=TRUE, eval=FALSE}
+# R/config.R
+CFG <- list(
+  in_dir         = "in_files/lidar",
+  forcing_file   = "in_files/ERA5_forcing.nc",
+  date_seq       = seq(as.Date("2021-06-01"), as.Date("2022-09-30"), by = "day"),
+  n_per_cluster  = 100,
+  n_fpc_total    = 3,
+  GAMM_CLIM_VARS = c("Tmax_macro", "Wind_mean", "Rad_mean", "VPD_mean")
+)
+FLAGS <- list(
+  RUN_CLHS = FALSE, RUN_H1_FORWARD = FALSE,
+  RUN_H2   = FALSE, RUN_GAMM = TRUE,
+  RUN_HOBO = FALSE, RUN_SHAPLEY = FALSE
+)
+```
+
+## Forward inclusion + Shapley
+
+```{r h1-code, echo=TRUE, eval=FALSE}
+fw_scs <- scenarios_h1_forward(df_sample)
+run_scenarios(df_sample, fw_scs, CFG$out_h1_forward,
+              skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
+
+shapley_res <- compute_shapley_exact(df_scores)
+plot_shapley_full(shapley_res,
+                 out_path = file.path(FIG, "02_shapley_attribution.png"))
+```
+
+## H2 Real vs Uniform LAD
+
+```{r h2-code, echo=TRUE, eval=FALSE}
+h2_scs <- scenarios_h2(df_sample)
+run_scenarios(df_sample, h2_scs, CFG$out_h2,
+              skip_existing = FLAGS$SKIP_EXISTING_SCENARIOS)
+
+df_h2_w <- pivot_wider(df_h2, id_cols = c(x, y, date),
+                       names_from = scenario, values_from = Delta_Tmax)
+plot_h2_paired(df_h2_w, "H2_real_LAD", "H2_uniform_LAD",
+               out_path = file.path(FIG, "05_h2_paired_real_vs_uniform.png"))
+```
+
+## GAMM de reference
+
+```{r gamm-code, echo=TRUE, eval=FALSE}
+# Modele : Delta_Tmax ~ s(LAI_sc) + s(Hmax_sc) + s(FPC1_sc) +
+#   s(Tmax_macro_sc) + s(Wind_mean_sc) + s(Rad_mean_sc) + s(VPD_mean_sc) +
+#   s(date_factor, bs="re") + s(plot_id, bs="re")
+# Famille : scat() -- adaptee a DeltaTmax >= 0
+gam_ref <- fit_reference_gamm(df_gamm, shape_type = "NONE",
+  clim_vars = c("Tmax_macro", "Wind_mean", "Rad_mean", "VPD_mean"))
+```
+
+\newpage
+
+# Annexes
+
+```{r fig-a05, fig.cap="A05 -- Hierarchie H1 : RMSE par scenario.", out.width="90%"}
+include_graphics("outputs/figures/annex/A05_h1_hierarchy.png")
+```
+
+```{r fig-a06, fig.cap="A06 -- Distribution DeltaTmax : Real vs Uniform LAD. Courbes superposables.", out.width="65%"}
+include_graphics("outputs/figures/annex/A06_h2_distributions.png")
+```
+
+```{r fig-a09, fig.cap="A09 -- Cluster-type vs Real LAD. R2=0.79 -- identique a Uniform.", out.width="65%"}
+include_graphics("outputs/figures/annex/A09_h2_ct_cluster_vs_real.png")
+```
+
+```{r fig-a16, fig.cap="A16 -- Coherence REF vs H2-real-LAD. R2=1.000, Bias=0.000 degC.", out.width="60%"}
+include_graphics("outputs/figures/annex/A16_ref_h2_reconciliation.png")
+```
+
+```{r fig-a17, fig.cap="A17 -- Stabilite saisonniere (Real - Uniform). Centre sur 0 de juin a septembre.", out.width="90%"}
+include_graphics("outputs/figures/annex/A17_h2_seasonal.png")
+```
+
+```{r fig-a18, fig.cap="A18 -- Bootstrap Shapley (50 sous-echantillons). Ranking LAI > fCover > Hmax >> LAD stable.", out.width="80%"}
+include_graphics("outputs/figures/annex/A18_shapley_bootstrap.png")
+```
+
+```{r fig-a13, fig.cap="A13 -- Series temporelles HOBO vs MuSICA pour 3 capteurs representatifs."}
+include_graphics("outputs/figures/annex/A13_hobo_timeseries.png")
+```
+

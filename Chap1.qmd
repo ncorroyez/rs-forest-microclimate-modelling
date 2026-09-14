@@ -1,0 +1,2219 @@
+---
+title: "Forest Structure and Microclimate: A Coupled LiDAR and Physical Modeling Approach"
+author: "Nathan Corroyez"
+format: 
+  html:
+    toc: true
+    code-fold: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 8
+    self-contained: true
+    number-sections: true
+  docx: default
+date: last-modified
+editor: visual
+---
+
+# 1. Introduction
+
+As global temperatures rise, forests play a critical role as "thermal refugia" for biodiversity, buffering temperature extremes through their canopy cover. While the cooling effect of the total amount of foliage—measured as the Leaf Area Index (LAI)—is well documented, the influence of the \*\*3D vertical arrangement\*\* of this foliage (the LAD profile) remains poorly understood in mechanistic modeling.
+
+## 1.1 Research Questions
+
+What is the sensitivity of sub-canopy temperatures (specifically the attenuation of maximum temperatures, \$\\Delta T\_{max}\$) simulated by the mechanistic model MuSICA to variations in the vertical arrangement of the canopy? What is the relative contribution of the vertical Leaf Area Density (LAD) distribution compared to the total Leaf Area Index (LAI)?
+
+## 1.2 Hypotheses
+
+**H1:** Vertical architecture significantly modulates radiative and aerodynamic transfers. The LAD profile is therefore a key parameter—on par with LAI or total height—for accurately simulating the forest microclimate. **H2:** At constant LAI and canopy height, profiles with biomass concentrated in the upper strata ("Top-Heavy" shapes) induce a stronger diurnal thermal attenuation (the "umbrella effect").
+
+# 2. Materials and Methods
+
+## 2.1 Study Site and Data
+
+**Meteorological Forcing:** ERA5 hourly reanalysis. **Forest Structure (3D):** Airborne LiDAR (ALS) structural metrics and LAD profiles. **Microclimate:** Time series of sub-canopy temperatures from an in-situ network of 53 HOBO sensors during the 2021 growing season.
+
+## 2.2 Workflow
+
+**1. Structural Characterization:** Unsupervised partitioning (K-Means) is applied to ALS metrics (LAI, max height, VCI, fCover) to define the architectural archetypes of the forest massif.
+
+**2. Isolation of the Mechanical Signal:** To quantify the relative contribution of vertical distribution independent of total LAI, two methodological pathways are evaluated: **Option A (In-silico design under ecological constraint):** Generation of an exhaustive synthetic factorial design in MuSICA. To ensure ecological validity, the structural profiles of the 53 instrumented HOBO plots are projected into this theoretical factorial space to filter out physically aberrant combinations. **Option B (In-situ spatial stratification):** Stratified sampling guided by ALS data, where rasters are cut into structural strata to extract real pixel sub-samples and their empirical LAD profiles for MuSICA.
+
+**3. Statistical Modeling:** Generalized Additive Mixed Models (GAMMs) are trained on the retained data space (focusing on Option A). A strict evaluation of variable concurvity is conducted to mathematically isolate the partial effect of the vertical profile from that of LAI.
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+if (rstudioapi::isAvailable()){
+  setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+  getwd()
+}
+
+# ==============================================================================
+# 0. CONFIGURATION & LIBRARIES
+# ==============================================================================
+library(musica.tools) 
+library(ncdf4)       
+library(tidyverse)   
+library(lubridate)   
+library(broom.mixed) 
+library(ggeffects)
+library(patchwork)   
+library(viridis)
+library(mgcv)       
+library(MASS)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(sf)
+
+# Graphical Theme
+theme_set(theme_bw() + 
+            theme(text = element_text(size = 12),
+                  plot.title = element_text(face = "bold", size = 14),
+                  legend.position = "bottom",
+                  strip.background = element_rect(fill = "grey95"),
+                  strip.text = element_text(face = "bold")))
+
+shape_order <- c("top_peak_uniform", "top_heavy", "uniform", "high_symmetric", "symmetric", 
+                 "top_bottom_heavy", "low_symmetric", "bottom_heavy", "extreme_bottom")
+
+# Paths (Adjust to local environment)
+in_dir        <- "in_files"
+out_dir       <- "out_files/Sensitivity_Analysis" 
+macro_nc_file <- file.path(in_dir, "musica_in_Blois.nc")
+metrics_file  <- file.path(in_dir, "metrics_results_25.csv")
+date_seq      <- seq(as.Date("2021-06-01"), as.Date("2021-09-30"), by = "day")
+
+ids_to_remove <- c("41_13", "41_14", "41_20", "41_41", "41_50", "41_51", "41_53")
+```
+
+```{r}
+#| label: data-loading-hidden
+#| cache: true
+#| message: false
+#| echo: false
+#| results: hide
+
+# Dummy block representing the loading of NetCDF files for Macroclimate, ALS validation, 
+# S2 validation, and the 1728 synthetic MuSICA runs.
+# (Assumes df_macro_hourly, df_valid_als, df_valid_s2, and df_physic are generated here).
+```
+
+# 3. Results and Discussion
+
+## 3.1 Structural Characterization (Typology)
+
+```{r}
+#| label: landscape-clustering-fpca-raw
+#| message: false
+#| warning: false
+
+# ==============================================================================
+# 1. DATA PREPARATION (ALL PIXELS)
+# ==============================================================================
+library(terra)
+library(tidyverse)
+library(fda)
+library(corrplot)
+
+# Load 10m rasters
+# r_lai_10m       <- rast(file.path(in_dir, "lidarlai_res_10_m.tif"))
+r_lai_10m       <- rast(file.path(in_dir, "lai_z1_res_10_m.tif"))
+r_vci_10m       <- rast(file.path(in_dir, "vci_res_10_m.tif"))
+# r_hmax_10m      <- rast(file.path(in_dir, "hmax_p95_res_10_m.tif"))
+r_hmax_10m      <- rast(file.path(in_dir, "max_res_10_m.tif"))
+r_fcover_10m    <- rast(file.path(in_dir, "fCover_res_10_m.tif"))
+r_lad_stack_10m <- rast(file.path(in_dir, "lad_profiles_z1_res_10_m.tif"))
+# r_lad_stack_10m <- rast(file.path(in_dir, "ladstack_classic_no_na.tif"))
+
+# Aggregate to 20m resolution to match optimal fetch and S2 optical constraints
+r_metrics_20m <- terra::aggregate(c(r_lai_10m, r_vci_10m, r_hmax_10m, r_fcover_10m), 
+                                  fact = 2, fun = "mean", na.rm = TRUE)
+names(r_metrics_20m) <- c("LAI", "VCI", "Hmax", "fCover")
+
+r_lad_stack_20m <- terra::aggregate(r_lad_stack_10m, fact = 2, fun = "mean", na.rm = TRUE)
+r_all_20m <- c(r_metrics_20m, r_lad_stack_20m)
+
+# Convert to dataframe and filter strict forest pixels
+df_all_pixels <- as.data.frame(r_all_20m, xy = TRUE, na.rm = FALSE) %>%
+  filter(if_any(-c(x, y), ~ !is.na(.)))
+
+mat_lad <- df_all_pixels %>% 
+  dplyr::select(starts_with("LAD_Layer_")) %>% 
+  as.matrix()
+
+row_sums  <- rowSums(mat_lad, na.rm = TRUE)
+valid_idx <- row_sums > 0.5 
+
+df_forest <- df_all_pixels[valid_idx, ]
+mat_lad   <- mat_lad[valid_idx, ]
+mat_lad[is.na(mat_lad)] <- 0
+row_sums  <- row_sums[valid_idx]
+
+# ==============================================================================
+# 2. fPCA ON NORMALIZED PROFILES (PURE SHAPE ONLY)
+# ==============================================================================
+# TOGGLE: Set to TRUE to use relative height (Z/Hmax), FALSE for absolute height
+normalize_height <- TRUE
+
+# 1. Normalize LAD so area = 1 (Controls for LAI)
+mat_lad_norm <- sweep(mat_lad, 1, row_sums, FUN = "/")
+
+lad_col_names <- colnames(mat_lad_norm)
+z_breaks <- as.numeric(gsub("LAD_Layer_", "", lad_col_names))
+
+if (normalize_height) {
+  cat("Normalizing height to relative scale (Z/Hmax)...\n")
+  
+  n_bins <- length(z_breaks)
+  z_rel_grid <- seq(0, 1, length.out = n_bins)
+  mat_lad_final <- matrix(0, nrow = nrow(mat_lad_norm), ncol = n_bins)
+  
+  for (i in 1:nrow(mat_lad_norm)) {
+    pixel_hmax <- max(df_forest$Hmax[i], 1) 
+    pixel_z_rel <- z_breaks / pixel_hmax
+    interp <- approx(x = pixel_z_rel, y = mat_lad_norm[i, ], xout = z_rel_grid, rule = 2)
+    mat_lad_final[i, ] <- pmax(interp$y, 0)
+  }
+  
+  rel_row_sums <- rowSums(mat_lad_final, na.rm = TRUE)
+  rel_row_sums[rel_row_sums == 0] <- 1 
+  mat_lad_final <- sweep(mat_lad_final, 1, rel_row_sums, FUN = "/")
+  
+  arg_vals <- z_rel_grid
+  
+} else {
+  cat("Using absolute height...\n")
+  mat_lad_final <- mat_lad_norm
+  arg_vals <- z_breaks
+}
+
+# 2. Functional Data Smoothing (CORRECTED LINES)
+basis <- create.bspline.basis(rangeval = c(min(arg_vals), max(arg_vals)), nbasis = 5)
+fd_obj <- Data2fd(argvals = arg_vals, y = t(mat_lad_final), basisobj = basis)
+
+# 3. Extract top PCs
+fpca_res <- pca.fd(fd_obj, nharm = 3)
+
+cat("Variance of pure shape captured by FPC 1-3:\n")
+print(round(fpca_res$varprop * 100, 1))
+
+par(mfrow = c(1, 3))
+plot.pca.fd(fpca_res, harm = 1:3, expand = 0.5)
+par(mfrow = c(1, 1))
+
+df_forest$FPC1 <- fpca_res$scores[, 1]
+df_forest$FPC2 <- fpca_res$scores[, 2]
+df_forest$FPC3 <- fpca_res$scores[, 3]
+
+# ==============================================================================
+# 3. ELBOW METHOD (ON ALL PIXELS)
+# ==============================================================================
+# Select variables and scale them
+df_cluster_input <- df_forest %>%
+  dplyr::select(LAI, 
+                Hmax, 
+                # VCI, 
+                # fCover, 
+                FPC1, 
+                FPC2,
+                FPC3
+                )
+
+# Remove any stray NAs before scaling
+is_clean <- complete.cases(df_cluster_input)
+df_clean <- df_cluster_input[is_clean, ]
+df_scaled <- scale(df_clean)
+
+cor_matrix <- cor(df_clean, method = "pearson")
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper", 
+         addCoef.col = "black", 
+         tl.col = "black", 
+         tl.srt = 45, 
+         diag = FALSE, 
+         col = colorRampPalette(c("#4477AA", "#FFFFFF", "#BB4444"))(200),
+         title = "Correlation Matrix of Structural Variables",
+         mar = c(0, 0, 2, 0))
+
+# stop()
+
+cat("Calculating WSS for the Elbow Method on all valid pixels...\n")
+max_k <- 10
+wss <- numeric(max_k)
+
+# Fast loop to compute Total Within-Cluster Sum of Squares
+set.seed(42)
+for (k in 1:max_k) {
+  km <- kmeans(df_scaled, centers = k, iter.max = 100, nstart = 25)
+  wss[k] <- km$tot.withinss
+}
+
+# Simple plot to visually verify the mathematical elbow
+plot(1:max_k, wss, type = "b", pch = 19, frame = FALSE, 
+     xlab = "Number of clusters K",
+     ylab = "Total within-clusters sum of squares",
+     main = "Elbow Method")
+
+# Mathematical elbow detection (maximum curvature using distance to the chord)
+# Line between first and last point
+p1 <- c(1, wss[1])
+p2 <- c(max_k, wss[max_k])
+distances <- numeric(max_k)
+for (i in 1:max_k) {
+  p0 <- c(i, wss[i])
+  # Perpendicular distance formula
+  distances[i] <- abs((p2[2]-p1[2])*p0[1] - (p2[1]-p1[1])*p0[2] + p2[1]*p1[2] - p2[2]*p1[1]) / 
+                  sqrt((p2[2]-p1[2])^2 + (p2[1]-p1[1])^2)
+}
+optimal_k <- which.max(distances)
+cat(sprintf("Mathematical Elbow detected at k = %d\n", optimal_k))
+
+# ==============================================================================
+# 4. FINAL K-MEANS & SPATIAL MAPPING
+# ==============================================================================
+# Run final model with the optimal k
+final_km <- kmeans(df_scaled, centers = optimal_k, iter.max = 100, nstart = 25)
+
+# Assign back to original dataframe
+df_forest$Cluster <- NA
+df_forest$Cluster[is_clean] <- as.factor(final_km$cluster)
+
+# Map it
+r_landscape_clusters <- rast(r_all_20m[[1]])
+values(r_landscape_clusters) <- NA
+
+df_mapped <- df_forest %>% filter(!is.na(Cluster))
+r_landscape_clusters[cellFromXY(r_landscape_clusters, df_mapped[, c("x", "y")])] <- as.numeric(df_mapped$Cluster)
+
+plot(r_landscape_clusters, col = viridis::turbo(optimal_k),
+     main = sprintf("Forest Archetypes (k = %d)", optimal_k),
+     type = "classes")
+
+# ==============================================================================
+# 5. COUNT PIXELS PER CLUSTER
+# ==============================================================================
+
+# Calculate absolute count and percentage for each cluster
+cluster_counts <- df_forest %>%
+  filter(!is.na(Cluster)) %>%
+  group_by(Cluster) %>%
+  summarise(
+    Pixel_Count = n(),
+    Percentage  = round((n() / sum(!is.na(df_forest$Cluster))) * 100, 1)
+  ) %>%
+  arrange(desc(Pixel_Count))
+
+print(cluster_counts)
+
+# ==============================================================================
+# 6. ECOLOGICAL PROFILING OF THE 5 CLUSTERS
+# ==============================================================================
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+# Reshape the data for multi-facet boxplots
+df_plot <- df_forest %>%
+  filter(!is.na(Cluster)) %>%
+  mutate(Cluster = as.factor(Cluster)) %>%
+  dplyr::select(Cluster, LAI, Hmax, fCover, FPC1, FPC2, FPC3) %>%
+  pivot_longer(cols = -Cluster, names_to = "Metric", values_to = "Value")
+
+# Generate the profiling boxplots
+p_profiles <- ggplot(df_plot, aes(x = Cluster, y = Value, fill = Cluster)) +
+  geom_boxplot(outlier.alpha = 0.05) +
+  facet_wrap(~ Metric, scales = "free_y", ncol = 3) +
+  scale_fill_viridis_d(option = "turbo") +
+  theme_bw() +
+  labs(title = "Structural Identity of the 5 Forest Archetypes",
+       x = "K-Means Cluster", y = "Metric Value") +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "grey95"),
+        strip.text = element_text(face = "bold"))
+
+print(p_profiles)
+
+# Dictionary mapping K-Means integer IDs to ecological archetypes
+archetype_names <- c(
+  "1" = "1",
+  "2" = "2",
+  "3" = "3",
+  "4" = "4",
+  "5" = "5"
+)
+
+# Apply labels and set as factor
+df_forest <- df_forest %>%
+  mutate(Archetype = recode_factor(as.character(Cluster), !!!archetype_names))
+
+# Verify the new structure
+cat("\nLandscape composition by Archetype:\n")
+print(table(df_forest$Archetype))
+
+# ==============================================================================
+# INTRA-CLUSTER CORRELATION MATRICES
+# ==============================================================================
+
+# Define the structural variables of interest
+vars_to_correlate <- c("LAI", 
+                       "Hmax", 
+                       "fCover", 
+                       "FPC1", 
+                       "FPC2",
+                       "FPC3"
+                       )
+
+# Set up a 2x2 plotting grid for the 4 clusters
+par(mfrow = c(2, 2))
+
+# Loop through each cluster (assuming your cluster column is named 'cluster')
+# Replace 'cluster' with the actual column name from your K-Means output
+for (i in 1:4) {
+  
+  # Subset data for the specific cluster
+  df_sub <- df_forest %>% 
+    filter(Cluster == i) %>% 
+    dplyr::select(all_of(vars_to_correlate))
+  
+  # Remove NAs to ensure cor() works
+  df_sub_clean <- df_sub[complete.cases(df_sub), ]
+  
+  # Compute Pearson correlation matrix
+  cor_mat <- cor(df_sub_clean, method = "pearson")
+  
+  # Plot the matrix
+  corrplot(cor_mat, 
+           method = "color", 
+           type = "upper", 
+           addCoef.col = "black", 
+           number.cex = 0.7,      # Make text slightly smaller to fit
+           tl.col = "black", 
+           tl.srt = 45, 
+           diag = FALSE, 
+           col = colorRampPalette(c("#4477AA", "#FFFFFF", "#BB4444"))(200),
+           title = paste("Cluster", i, "Correlations"),
+           mar = c(0, 0, 2, 0))   # Margin adjustment for the title
+}
+
+# Reset plotting parameters
+par(mfrow = c(1, 1))
+# stop()
+# ==============================================================================
+# 8. SPATIAL MAPPING OF CONTINUOUS FUNCTIONAL PRINCIPAL COMPONENTS
+# ==============================================================================
+library(terra)
+library(grDevices)
+
+# 1. Create an empty raster template using your existing 20m spatial extent
+r_template <- rast(r_metrics_20m[[1]])
+values(r_template) <- NA
+
+# 2. Initialize individual raster layers for each FPC
+r_fpc1 <- r_template
+r_fpc2 <- r_template
+r_fpc3 <- r_template
+
+# 3. Identify the raster cell indices for your valid forest pixels
+cell_idx <- cellFromXY(r_template, df_forest[, c("x", "y")])
+
+# 4. Fill the rasters with the FPC scores
+r_fpc1[cell_idx] <- df_forest$FPC1
+r_fpc2[cell_idx] <- df_forest$FPC2
+r_fpc3[cell_idx] <- df_forest$FPC3
+
+# 5. Stack them together and rename for clarity
+r_fpcs <- c(r_fpc1, r_fpc2, r_fpc3)
+names(r_fpcs) <- c("FPC1: Bottom-Heavy (+) vs Top-Heavy (-)", 
+                   "FPC2: Low Canopy (+) vs High Canopy (-)", 
+                   "FPC3: Multi-layer (+) vs Unimodal (-)")
+
+# 6. Plotting with a divergent color palette
+# Blue represents negative scores, White is average (0), Red represents positive scores
+div_pal <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100)
+
+# We define dynamic breaks to ensure 0 is always strictly in the middle (white)
+plot(r_fpcs, col = div_pal, 
+     range = c(-max(abs(minmax(r_fpcs))), max(abs(minmax(r_fpcs)))),
+     axes = FALSE, box = FALSE,
+     mar = c(2, 2, 3, 2)) # Adjust margins for the long titles
+```
+
+```{r}
+# ==============================================================================
+# CALCULATING UNIFORMITY METRICS FOR SAMPLING DISTRIBUTIONS
+# ==============================================================================
+
+calc_uniformity <- function(data, variable_name, n_bins = 15) {
+  
+  # Extract the numeric vector, removing NAs
+  x <- na.omit(data[[variable_name]])
+  if(length(x) == 0) return(NULL)
+  
+  # 1. Kolmogorov-Smirnov Distance (D-statistic)
+  # Comparing empirical data to a theoretical uniform distribution [min, max]
+  ks_res <- suppressWarnings(ks.test(x, "punif", min(x), max(x)))
+  d_stat <- unname(ks_res$statistic)
+  
+  # 2. Shannon Evenness Index (J)
+  # Bin the data to calculate discrete probabilities
+  breaks <- seq(min(x), max(x), length.out = n_bins + 1)
+  counts <- hist(x, breaks = breaks, plot = FALSE)$counts
+  
+  # Calculate probabilities for non-empty bins
+  p <- counts[counts > 0] / sum(counts)
+  
+  # Calculate Shannon Entropy (H) and Maximum possible Entropy (H_max)
+  H <- -sum(p * log(p))
+  H_max <- log(n_bins)
+  
+  # Calculate Evenness (0 = highly skewed, 1 = perfectly uniform)
+  evenness <- H / H_max
+  
+  # Return metrics as a neat dataframe
+  data.frame(
+    Variable = variable_name,
+    KS_Distance = round(d_stat, 3), # Closer to 0 is better
+    Shannon_Evenness = round(evenness, 3) # Closer to 1 is better
+  )
+}
+```
+
+```{r}
+# ==============================================================================
+# OPTION B: BALANCED IN-SITU STRATIFIED SAMPLING FOR MuSICA
+# ==============================================================================
+
+# 1. Discretize continuous metrics into logical ecological classes
+# Breaks are chosen based on the boxplot distributions observed previously
+df_stratified <- df_forest %>%
+  filter(!is.na(Archetype)) %>%
+  mutate(
+    # LAI classes: Sparse (0-2), Medium (2-4), Dense (4-6), Very Dense (>6)
+    LAI_class = cut(LAI, breaks = c(0, 2, 4, 6, Inf), 
+                    labels = c("Low", "Med", "High", "VeryHigh"), 
+                    include.lowest = TRUE),
+    
+    # Height classes: Regen (0-10), Pole (10-20), Mature (20-30), Giant (>30)
+    Hmax_class = cut(Hmax, breaks = c(0, 10, 20, 30, Inf), 
+                     labels = c("Regen", "Pole", "Mature", "Giant"), 
+                     include.lowest = TRUE),
+    
+    # Create the unique Stratum ID (e.g., "Mature Dense Forest_High_Giant")
+    Stratum_ID = paste(Archetype, LAI_class, Hmax_class, sep = "_")
+  )
+
+# 2. Filter out marginal/artifact strata 
+# We only keep strata that exist consistently in the real landscape (min 20 pixels)
+strata_counts <- df_stratified %>% 
+  count(Stratum_ID) %>%
+  arrange(desc(n))
+
+valid_strata <- strata_counts %>% 
+  filter(n >= 20) %>% 
+  pull(Stratum_ID)
+
+df_valid_strata <- df_stratified %>% 
+  filter(Stratum_ID %in% valid_strata)
+
+cat(sprintf("Number of valid ecological strata identified: %d out of %d possible combinations\n", 
+            length(valid_strata), 5 * 4 * 4))
+
+# 3. Balanced Random Sampling
+# We extract N real pixels per stratum. N=15 gives a good statistical power for GAMMs 
+# without overloading MuSICA's computation time.
+n_samples_per_stratum <- 10
+
+df_musica_sample <- df_valid_strata %>%
+  group_by(Stratum_ID) %>%
+  # If a stratum has fewer than N pixels (shouldn't happen due to filter, but safe), take all
+  sample_n(size = min(n(), n_samples_per_stratum)) %>%
+  ungroup()
+
+cat(sprintf("Total real LAD profiles extracted for MuSICA simulation: %d\n", 
+            nrow(df_musica_sample)))
+
+# 4. Prepare the final export dataframe
+# Select coordinates, metadata, structural classes, and the LAD profile layers
+df_export <- df_musica_sample %>%
+  dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI,
+                FPC1, FPC2, FPC3,
+                LAI_class, Hmax_class, Stratum_ID, 
+                starts_with("LAD_Layer_"))
+
+# Display a summary of the sampling design (Archetype vs LAI)
+cat("\nSampling Matrix: Number of plots per Archetype and LAI class:\n")
+print(table(df_export$Archetype, df_export$LAI_class))
+
+# Display a summary of the sampling design (Archetype vs Height)
+cat("\nSampling Matrix: Number of plots per Archetype and Height class:\n")
+print(table(df_export$Archetype, df_export$Hmax_class))
+
+# Write to CSV when ready
+# write.csv(df_export, file.path(out_dir, "musica_option_b_inputs.csv"), row.names = FALSE)out_dir, "musica_option_b_inputs.csv"), row.names = FALSE)
+
+# ==============================================================================
+# 5. SPATIAL MAPPING OF THE IN-SITU SAMPLED PIXELS (OPTION B)
+# ==============================================================================
+# Plot the background raster map of forest archetypes
+plot(r_landscape_clusters, col = viridis::turbo(5),
+     main = "Spatial Distribution of the 510 Sampled Pixels (MuSICA Inputs)",
+     type = "classes", legend = FALSE, axes = FALSE, box = FALSE)
+
+# Overlay the 510 extracted pixels
+# pch = 21 creates a filled circle with a distinct border (highly visible)
+# bg = "white" ensures the points pop out against the colored raster background
+points(df_export$x, df_export$y, 
+       pch = 21, bg = "white", col = "black", 
+       cex = 0.8, lwd = 1.2)
+
+# Optional: Add a custom legend for the archetypes
+legend("topleft", 
+       legend = c("1", 
+                  "2", 
+                  "3", 
+                  "4", 
+                  "5"),
+       fill = viridis::turbo(5), 
+       bty = "n", cex = 0.8, inset = 0.02)
+
+# ==============================================================================
+# 6. HISTOGRAMS OF THE SAMPLED MULTIVARIATE SPACE (OPTION B)
+# ==============================================================================
+
+# We use df_musica_sample because it contains all original metrics (including VCI)
+df_hist <- df_musica_sample %>%
+  dplyr::select(LAI, Hmax, fCover) %>%
+  pivot_longer(cols = everything(), names_to = "Metric", values_to = "Value")
+
+# Generate the facet plot with histograms
+p_histograms <- ggplot(df_hist, aes(x = Value, fill = Metric)) +
+  geom_histogram(bins = 30, color = "black", alpha = 0.8) +
+  facet_wrap(~ Metric, scales = "free", ncol = 2) +
+  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.8) +
+  theme_bw() +
+  labs(title = "Structural Distribution of the Sampled Plots (Option B)",
+       subtitle = "Validating the balanced stratification of the physical space",
+       x = "Metric Value", 
+       y = "Frequency (Number of Pixels)") +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "grey95"),
+        strip.text = element_text(face = "bold", size = 12))
+
+print(p_histograms)
+
+# Uniformity
+metrics_clhs <- bind_rows(
+  calc_uniformity(df_musica_sample, "Hmax"),
+  calc_uniformity(df_musica_sample, "LAI"),
+  calc_uniformity(df_musica_sample, "FPC1"),
+  calc_uniformity(df_musica_sample, "FPC2"),
+  calc_uniformity(df_musica_sample, "FPC3")
+)
+print(metrics_clhs)
+```
+
+```{r}
+# ==============================================================================
+# OPTION B: UNIFORM STRATIFIED SAMPLING FOR MuSICA (FINE-GRAINED GRID)
+# ==============================================================================
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Discretize continuous metrics into a fine-grained grid
+# Using narrow breaks to force uniform sampling across the entire multivariate space
+df_stratified <- df_forest %>%
+  filter(!is.na(Archetype)) %>%
+  mutate(
+    # Fine bins for LAI (intervals of 0.5)
+    LAI_bin = cut(LAI, 
+                  breaks = seq(0, ceiling(max(LAI, na.rm = TRUE)), by = 1), 
+                  include.lowest = TRUE),
+    
+    # Fine bins for Hmax (intervals of 2 meters)
+    Hmax_bin = cut(Hmax, 
+                   breaks = seq(0, ceiling(max(Hmax, na.rm = TRUE)), by = 5), 
+                   include.lowest = TRUE),
+                   
+    # Optional: Binning fCover to help flatten its highly skewed distribution
+    # fCover_bin = cut(fCover, 
+    #                  breaks = seq(0, 1, by = 0.1), 
+    #                  include.lowest = TRUE),
+    
+    # Create the unique Stratum ID from the fine grid
+    Stratum_ID = paste(Archetype, LAI_bin, Hmax_bin, 
+                       # fCover_bin, 
+                       sep = "_")
+  ) %>%
+  # Drop edge cases that might fall outside breaks
+  filter(!is.na(Stratum_ID))
+
+# 2. Filter out marginal/artifact strata 
+# Threshold lowered because fine strata inherently contain fewer pixels
+strata_counts <- df_stratified %>% 
+  count(Stratum_ID) %>%
+  arrange(desc(n))
+
+# Minimum 3 pixels to consider a stratum "real" in the landscape
+valid_strata <- strata_counts %>% 
+  filter(n >= 3) %>% 
+  pull(Stratum_ID)
+
+df_valid_strata <- df_stratified %>% 
+  filter(Stratum_ID %in% valid_strata)
+
+cat(sprintf("Number of valid fine ecological strata identified: %d\n", 
+            length(valid_strata)))
+
+# 3. Balanced Random Sampling on the fine grid
+# Extract only 1 or 2 pixels per fine stratum to avoid inflating total sample size
+n_samples_per_stratum <- 2
+
+df_musica_sample <- df_valid_strata %>%
+  group_by(Stratum_ID) %>%
+  sample_n(size = min(n(), n_samples_per_stratum)) %>%
+  ungroup()
+
+cat(sprintf("Total real LAD profiles extracted for MuSICA simulation: %d\n", 
+            nrow(df_musica_sample)))
+
+# 4. Prepare the final export dataframe
+df_export <- df_musica_sample %>%
+  dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI,
+                FPC1, FPC2, FPC3,
+                Stratum_ID, 
+                starts_with("LAD_Layer_"))
+
+# Write to CSV when ready
+# write.csv(df_export, file.path(out_dir, "musica_option_b_uniform.csv"), row.names = FALSE)
+
+# ==============================================================================
+# 5. SPATIAL MAPPING OF THE IN-SITU SAMPLED PIXELS
+# ==============================================================================
+# Plot the background raster map of forest archetypes
+plot(r_landscape_clusters, col = viridis::turbo(5),
+     main = "Spatial Distribution of Sampled Pixels (Uniform Grid)",
+     type = "classes", legend = FALSE, axes = FALSE, box = FALSE)
+
+# Overlay the extracted pixels
+points(df_export$x, df_export$y, 
+       pch = 21, bg = "white", col = "black", 
+       cex = 0.8, lwd = 1.2)
+
+# Add custom legend
+legend("topleft", 
+       legend = c("1", 
+                  "2", 
+                  "3", 
+                  "4", 
+                  "5"),
+       fill = viridis::turbo(5), 
+       bty = "n", cex = 0.8, inset = 0.02)
+
+# ==============================================================================
+# 6. HISTOGRAMS OF THE SAMPLED MULTIVARIATE SPACE
+# ==============================================================================
+# Included VCI in the selection to match the 4-panel plot requirement
+df_hist <- df_musica_sample %>%
+  dplyr::select(LAI, Hmax, fCover, VCI) %>%
+  pivot_longer(cols = everything(), names_to = "Metric", values_to = "Value")
+
+# Generate the facet plot with histograms
+p_histograms <- ggplot(df_hist, aes(x = Value, fill = Metric)) +
+  geom_histogram(bins = 30, color = "black", alpha = 0.8) +
+  facet_wrap(~ Metric, scales = "free", ncol = 2) +
+  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.8) +
+  theme_bw() +
+  labs(title = "Structural Distribution of the Sampled Plots (Uniform Grid)",
+       subtitle = "Flattening the distributions via fine-grained multivariate stratification",
+       x = "Metric Value", 
+       y = "Frequency (Number of Pixels)") +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "grey95"),
+        strip.text = element_text(face = "bold", size = 12))
+print(p_histograms)
+
+# ==============================================================================
+# CLEAN ABSOLUTE LAD PROFILES (BINNED AVERAGE + RIBBON)
+# ==============================================================================
+library(tidyverse)
+library(stringr)
+
+# 1. Transform raw data, bin heights, and calculate stats directly
+df_binned <- df_export %>%
+  mutate(
+    plot_id = row_number(),
+    Main_Cluster = str_extract(Stratum_ID, "^[^_]+")
+  ) %>%
+  dplyr::select(plot_id, Main_Cluster, Hmax, starts_with("LAD_Layer_")) %>%
+  pivot_longer(
+    cols = starts_with("LAD_Layer_"),
+    names_to = "Layer",
+    values_to = "LAD"
+  ) %>%
+  mutate(
+    abs_height = as.numeric(str_replace(Layer, "LAD_Layer_", "")),
+    LAD = replace_na(LAD, 0)
+  ) %>%
+  # Remove air above canopy
+  filter(abs_height <= ceiling(Hmax) + 1) %>%
+  # Create 1-meter vertical bins
+  mutate(height_bin = round(abs_height)) %>%
+  # Group by archetype and height bin, then calculate stats on raw LAD
+  group_by(Main_Cluster, height_bin) %>%
+  summarise(
+    mean_LAD_bin = mean(LAD, na.rm = TRUE),
+    q25 = quantile(LAD, 0.25, na.rm = TRUE),
+    q75 = quantile(LAD, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Plot the summarized profiles
+p_clean_strata <- ggplot(df_binned, aes(y = height_bin, color = Main_Cluster, fill = Main_Cluster)) +
+  # Draw the shaded ribbon representing the structural variability (25th-75th percentiles)
+  geom_ribbon(aes(xmin = q25, xmax = q75), alpha = 0.3, color = NA) +
+  # Draw the thick solid line for the mean profile
+  geom_path(aes(x = mean_LAD_bin), linewidth = 1.2) +
+  # Create one panel per cluster
+  facet_wrap(~ Main_Cluster, scales = "free_x") +
+  scale_color_viridis_d(option = "turbo") +
+  scale_fill_viridis_d(option = "turbo") +
+  labs(
+    title = "Absolute Vertical Foliage Profiles (Summarized)",
+    subtitle = "Solid line: Mean LAD | Shaded area: Interquartile Range (25th-75th percentile)",
+    x = "Absolute Leaf Area Density (LAD, m2/m3)",
+    y = "Height Above Ground (meters)"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "grey90", color = "black"),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_clean_strata)
+
+# Uniformity
+metrics_clhs <- bind_rows(
+  calc_uniformity(df_musica_sample, "Hmax"),
+  calc_uniformity(df_musica_sample, "LAI"),
+  calc_uniformity(df_musica_sample, "FPC1"),
+  calc_uniformity(df_musica_sample, "FPC2"),
+  calc_uniformity(df_musica_sample, "FPC3")
+)
+print(metrics_clhs)
+```
+
+```{r}
+# ==============================================================================
+# OPTION C: STRATIFIED CONDITIONED LATIN HYPERCUBE SAMPLING (cLHS)
+# ==============================================================================
+library(dplyr)
+library(purrr)
+library(clhs)
+library(ggplot2)
+library(tidyr)
+
+# 1. Define sampling targets
+# E.g., 60 pixels per archetype to get a total of 300 samples for MuSICA
+n_per_archetype <- 100
+
+# 2. Execute stratified cLHS
+# We split the dataset by Archetype and run clhs() on each subset independently
+set.seed(42) # For reproducibility of the random Latin Hypercube generation
+
+df_musica_sample <- df_forest %>%
+  filter(!is.na(Archetype)) %>%
+  # Split the dataframe into a list of dataframes (one per Archetype)
+  split(.$Archetype) %>%
+  # Apply cLHS to each dataframe in the list and bind the results back together
+  map_dfr(function(df_subset) {
+    
+    # Isolate continuous variables to balance (x,y included for spatial spread)
+    df_lhs_vars <- df_subset %>%
+      dplyr::select(x, y, 
+                    LAI, Hmax
+                    # fCover, 
+                    # FPC1, FPC2, FPC3
+                    )
+    
+    # Handle cases where an Archetype might have fewer available pixels than requested
+    n_target <- min(n_per_archetype, nrow(df_subset))
+    
+    # Run the Conditioned Latin Hypercube algorithm
+    # iter = 1000 gives good optimization without taking too long
+    lhs_res <- clhs(df_lhs_vars, 
+                    size = n_target, 
+                    iter = 1000, 
+                    simple = FALSE, 
+                    progress = FALSE)
+    
+    # Extract the exact rows selected by the algorithm
+    df_subset[lhs_res$index_samples, ]
+  })
+
+# Display the sampling matrix to confirm exactly N samples per Archetype
+cat("\nSampling Matrix: Number of plots per Archetype:\n")
+print(table(df_musica_sample$Archetype))
+
+# 3. Prepare the final export dataframe
+df_export <- df_musica_sample %>%
+  dplyr::select(x, y, Archetype, LAI, Hmax, fCover, VCI,
+                FPC1, FPC2, FPC3,
+                starts_with("LAD_Layer_"))
+
+# ==============================================================================
+# 4. HISTOGRAMS OF THE cLHS SAMPLED MULTIVARIATE SPACE
+# ==============================================================================
+df_hist <- df_musica_sample %>%
+  dplyr::select(LAI, Hmax, fCover, FPC1, FPC2, FPC3) %>%
+  pivot_longer(cols = everything(), names_to = "Metric", values_to = "Value")
+
+p_histograms <- ggplot(df_hist, aes(x = Value, fill = Metric)) +
+  geom_histogram(bins = 30, color = "black", alpha = 0.8) +
+  facet_wrap(~ Metric, scales = "free", ncol = 2) +
+  scale_fill_viridis_d(option = "mako", begin = 0.3, end = 0.8) +
+  theme_bw() +
+  labs(title = "Structural Distribution (Stratified cLHS)",
+       subtitle = "Optimized uniform sampling across multidimensional space",
+       x = "Metric Value", 
+       y = "Frequency (Number of Pixels)") +
+  theme(legend.position = "none",
+        strip.background = element_rect(fill = "grey95"),
+        strip.text = element_text(face = "bold", size = 12))
+
+print(p_histograms)
+
+# Uniformity
+metrics_clhs <- bind_rows(
+  calc_uniformity(df_musica_sample, "Hmax"),
+  calc_uniformity(df_musica_sample, "LAI"),
+  calc_uniformity(df_musica_sample, "FPC1"),
+  calc_uniformity(df_musica_sample, "FPC2"),
+  calc_uniformity(df_musica_sample, "FPC3")
+)
+print(metrics_clhs)
+```
+
+```{r}
+# ==============================================================================
+# 7. BIVARIATE FEATURE SPACE: cLHS SAMPLES VS HOBO SENSORS
+# ==============================================================================
+
+# 1. Load the sensors positions (GeoJSON)
+hobo_pts <- st_read(file.path(in_dir, "data_Blois_utm31n.geojson"))
+
+# 2. Extract raster values at sensor locations
+# Ensure the points and raster share the same CRS before extracting
+extracted_values <- terra::extract(r_metrics_20m, vect(hobo_pts))
+
+# 3. Combine coordinates/metadata with extracted metrics
+# We bind the columns and rename them to match your previous variables
+df_hobo <- hobo_pts %>%
+  bind_cols(extracted_values) %>%
+  mutate(LAI = as.numeric(LAI),
+         Hmax = as.numeric(Hmax)) %>%
+  filter(!(id_plot %in% ids_to_remove))
+
+# Generate the bivariate scatterplot
+p_scatter <- ggplot() +
+  # 1. Plot the background cLHS sampled pixels
+  geom_point(data = df_musica_sample, 
+             aes(x = LAI, y = Hmax, color = as.factor(Archetype)), 
+             alpha = 0.5, size = 2) +
+             
+  # 2. Overlay the HOBO sensors
+  # Using a distinct shape (24 = filled triangle) and bright color to make them pop
+  geom_point(data = df_hobo, 
+             aes(x = LAI, y = Hmax), 
+             fill = "red", color = "black", 
+             shape = 24, size = 3.5, stroke = 1) +
+             
+  # Aesthetics and labels
+  scale_color_viridis_d(option = "turbo", name = "Archetype") +
+  theme_bw() +
+  labs(title = "Bivariate Feature Space: cLHS Samples vs In-Situ HOBOs",
+       subtitle = "Checking for interpolation limits (GAMM validation)",
+       x = "Leaf Area Index (LAI)", 
+       y = "Maximum Height (Hmax, meters)") +
+  theme(legend.position = "right",
+        plot.title = element_text(face = "bold"))
+
+print(p_scatter)
+
+# ==============================================================================
+# VALIDATING cLHS REPRESENTATIVENESS: SAMPLE VS POPULATION PROFILES (2x2 GRID)
+# ==============================================================================
+library(tidyverse)
+library(stringr)
+library(patchwork) # Excellent package to combine ggplots
+
+# 1. Function to process and normalize LAD profiles
+# Reduces code duplication for both sample and population datasets
+prepare_profiles <- function(df_input) {
+  df_input %>%
+    filter(!is.na(Archetype)) %>%
+    mutate(
+      plot_id = row_number(),
+      Main_Cluster = str_extract(Archetype, "^[^_]+") 
+    ) %>%
+    dplyr::select(plot_id, Main_Cluster, Hmax, starts_with("LAD_Layer_")) %>%
+    pivot_longer(
+      cols = starts_with("LAD_Layer_"),
+      names_to = "Layer",
+      values_to = "LAD"
+    ) %>%
+    mutate(
+      abs_height = as.numeric(str_replace(Layer, "LAD_Layer_", "")),
+      LAD = replace_na(LAD, 0)
+    ) %>%
+    # Remove empty air above canopy
+    filter(abs_height <= ceiling(Hmax) + 1) %>%
+    group_by(plot_id) %>%
+    mutate(
+      rel_height = abs_height / Hmax,
+      rel_height = ifelse(rel_height > 1, 1, rel_height),
+      sum_LAD = sum(LAD, na.rm = TRUE),
+      rel_LAD = ifelse(sum_LAD > 0, LAD / sum_LAD, 0)
+    ) %>%
+    ungroup()
+}
+
+# 2. Process both datasets
+# Assuming df_musica_sample is your cLHS result and df_forest is the entire map
+df_prof_sample <- prepare_profiles(df_musica_sample)
+df_prof_pop    <- prepare_profiles(df_forest)
+
+# ==============================================================================
+# 3. GENERATE THE 4 PLOTS
+# ==============================================================================
+
+# Common theme and scale settings to keep the code clean
+shared_theme <- theme_bw(base_size = 11) + theme(legend.position = "none")
+color_scale  <- scale_color_viridis_d(option = "turbo")
+fill_scale   <- scale_fill_viridis_d(option = "turbo")
+
+# --- PLOT 1: NORMALIZED SAMPLE ---
+p_norm_sample <- ggplot(df_prof_sample, aes(x = rel_height, y = rel_LAD, color = Main_Cluster, fill = Main_Cluster)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs", k = 7), alpha = 0.2, linewidth = 1) +
+  coord_flip(xlim = c(0, 1), ylim = c(0, NA)) +
+  color_scale + fill_scale + shared_theme +
+  labs(title = "A) Relative (cLHS Sample)", x = "Relative Height", y = "Relative LAD")
+
+# --- PLOT 2: NORMALIZED POPULATION ---
+p_norm_pop <- ggplot(df_prof_pop, aes(x = rel_height, y = rel_LAD, color = Main_Cluster, fill = Main_Cluster)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs", k = 7), alpha = 0.2, linewidth = 1) +
+  coord_flip(xlim = c(0, 1), ylim = c(0, NA)) +
+  color_scale + fill_scale + shared_theme +
+  labs(title = "B) Relative (Full Population)", x = "Relative Height", y = "Relative LAD")
+
+# --- PLOT 3: ABSOLUTE SAMPLE ---
+# Using max height of ~40-45m for xlim to keep Y-axis strictly positive
+p_abs_sample <- ggplot(df_prof_sample, aes(x = abs_height, y = LAD, color = Main_Cluster, fill = Main_Cluster)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs", k = 7), alpha = 0.2, linewidth = 1) +
+  coord_flip(xlim = c(0, max(df_prof_pop$abs_height, na.rm = TRUE)), ylim = c(0, NA)) +
+  color_scale + fill_scale + shared_theme +
+  labs(title = "C) Absolute (cLHS Sample)", x = "Height (m)", y = expression("LAD (" * m^2/m^3 * ")"))
+
+# --- PLOT 4: ABSOLUTE POPULATION ---
+p_abs_pop <- ggplot(df_prof_pop, aes(x = abs_height, y = LAD, color = Main_Cluster, fill = Main_Cluster)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs", k = 7), alpha = 0.2, linewidth = 1) +
+  coord_flip(xlim = c(0, max(df_prof_pop$abs_height, na.rm = TRUE)), ylim = c(0, NA)) +
+  color_scale + fill_scale + shared_theme +
+  labs(title = "D) Absolute (Full Population)", x = "Height (m)", y = expression("LAD (" * m^2/m^3 * ")"))
+
+# ==============================================================================
+# 4. COMBINE WITH PATCHWORK
+# ==============================================================================
+
+# Create a 2x2 grid: Top row = Normalized, Bottom row = Absolute
+# Collect the legend and put it on the right side
+combined_plot <- (p_norm_sample | p_norm_pop) / 
+                 (p_abs_sample  | p_abs_pop) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "Validation of cLHS Spatial Sampling vs Entire Forest Population",
+    subtitle = "Comparing canopy architectural shapes (Relative) and true physical volumes (Absolute)",
+    theme = theme(legend.position = "right")
+  )
+
+print(combined_plot)
+```
+
+```{r}
+# ==============================================================================
+# 7. EXECUTING MuSICA SIMULATIONS FOR THE 340 OPTION B PIXELS
+# ==============================================================================
+library(musica.tools)
+library(rmusica)
+library(dplyr)
+
+# Configuration
+forcing_file <- "./in_files/musica_in_Blois.nc"
+# forcing_file <- "./in_files/musica_in_Safran_Blois_2021.nc"
+musica.cmd   <- "bash -i -c musica"
+out_nc_dir   <- "out_files/musica_option_b_ERA5_results_3003"
+
+if(!dir.exists(out_nc_dir)) dir.create(out_nc_dir, recursive = TRUE)
+
+cat(sprintf("Starting MuSICA batch processing for %d plots...\n", nrow(df_export)))
+
+# Loop through each of the 510 extracted pixels
+for (i in seq_len(nrow(df_export))) {
+  
+  current_plot <- df_export[i, ]
+  
+  # ----------------------------------------------------------------------------
+  # 1. DYNAMIC NAMING & METADATA
+  # ----------------------------------------------------------------------------
+  x_coord <- round(current_plot$x)
+  y_coord <- round(current_plot$y)
+  
+  sim_id <- sprintf("Sim_%03d_X%d_Y%d", 
+                    i, x_coord, y_coord 
+                    # current_plot$Stratum_ID
+                    )
+  
+  history_file <- file.path(out_nc_dir, paste0("musica_out_", sim_id, ".nc"))
+  
+  # Skip if already computed (useful if the loop crashes and you need to restart)
+  if (file.exists(history_file)) next 
+  
+  cat(sprintf("\nProcessing %d/%d: %s\n", i, nrow(df_export), sim_id))
+  
+  # ----------------------------------------------------------------------------
+  # 2. EXTRACTING METRICS
+  # ----------------------------------------------------------------------------
+  canopy_height_top <- current_plot$Hmax
+  plantareaindex    <- current_plot$LAI
+  clumping          <- current_plot$fCover
+  
+  # ----------------------------------------------------------------------------
+  # 3. BUILDING THE ALLOMETRY DATAFRAME
+  # ----------------------------------------------------------------------------
+  # Extract LAD columns, safely handle NAs, and map them to their corresponding heights
+  lad_cols   <- grep("LAD_Layer_", names(current_plot), value = TRUE)
+  lad_values <- as.numeric(current_plot[lad_cols])
+  lad_values[is.na(lad_values)] <- 0
+  
+  # Extract height from column name (e.g., "LAD_Layer_2.5" -> 2.5)
+  z_heights <- as.numeric(gsub("LAD_Layer_", "", lad_cols))
+  
+  allometry <- data.frame(
+    height  = z_heights,
+    density = lad_values
+  )
+  
+  # Clean the profile: remove zero-density heights far above Hmax to help MuSICA 
+  # safely find the physical top of the canopy
+  allometry <- allometry %>% filter(height <= ceiling(canopy_height_top) + 1)
+  
+  # ----------------------------------------------------------------------------
+  # 4. PHENOLOGY CALCULATION
+  # ----------------------------------------------------------------------------
+  phenology <- calc_phenology(
+    list.year             = c(2021, 2022),
+    nleafage              = 1,
+    budburst_date         = 115,
+    leaf_age_max_in       = 0.56,
+    relative_age_firstmax = 0.10,
+    relative_age_lastmax  = 0.75,
+    LAI_max_per_cohort    = plantareaindex
+  )
+  
+  # ----------------------------------------------------------------------------
+  # 5. CALL MuSICA
+  # ----------------------------------------------------------------------------
+  tryCatch({
+    musica_out <- callmusica(
+      musica.param = list(
+        "setupctl" = list(
+          "clumping_factor"  = clumping,
+          "forcing_filename" = forcing_file,
+          "history_filename" = history_file,
+          "forcing_height"   = canopy_height_top + 2
+        )
+      ),
+      leaf.param = list(
+        "musica_veg1" = list(
+          "phenology"        = phenology,
+          "allometry"        = allometry,
+          "leafphenologyctl" = list("lai_max_per_cohort" = plantareaindex),
+          "leafallometryctl" = list(
+            "canopy_height_top"    = canopy_height_top,
+            "canopy_height_bottom" = 1
+          ),
+          "leafmusicactl" = list("canopy_height_top" = canopy_height_top)
+        )
+      ),
+      musica.cmd = musica.cmd,
+      keep.tmp   = FALSE,  # Keep FALSE to save massive disk space over 510 runs
+      out.netcdf = TRUE
+    )
+  }, error = function(e) {
+    cat(sprintf("ERROR on %s: %s\n", sim_id, e$message))
+  })
+}
+
+cat("\n========================================================\n")
+cat("SUCCESS: All MuSICA simulations completed.\n")
+cat("Outputs saved in:", out_nc_dir, "\n")
+cat("========================================================\n")
+```
+
+```{r}
+# ==============================================================================
+# 7.5 EXTRACT MACROCLIMATE REFERENCE (SAFRAN FORCING)
+# ==============================================================================
+library(ncdf4)
+library(dplyr)
+library(lubridate)
+
+# forcing_file <- "./in_files/musica_in_Safran_Blois_2021.nc"
+forcing_file <- "./in_files/musica_in_Blois.nc"
+cat("Extracting Macroclimate...\n")
+
+force_utc_nc <- function(ncfile, varname = "time") {
+  if (!file.exists(ncfile)) stop(paste("Fichier introuvable:", ncfile))
+  
+  nc <- nc_open(ncfile)
+  on.exit(nc_close(nc)) # Fermeture automatique garantie
+  
+  # Récupération des données brutes
+  time_val <- ncvar_get(nc, varname)
+  units_str <- ncatt_get(nc, varname, "units")$value
+  
+  # Parsing robuste de la chaîne "hours since YYYY-MM-DD..."
+  parts <- strsplit(units_str, " since ")[[1]]
+  if (length(parts) < 2) stop("Format de date NetCDF non reconnu")
+  
+  unit_type <- parts[1] # ex: "hours"
+  origin_str <- parts[2] # ex: "2021-01-01 00:00:00"
+  
+  # Nettoyage : retirer d'éventuels suffixes comme "(GMT+00)" ou "UTC" à la fin
+  origin_str <- gsub("\\s*\\(.*\\)", "", origin_str)
+  origin_str <- gsub(" UTC", "", origin_str)
+  
+  # Conversion de l'origine en POSIXct UTC strict
+  origin_dt <- as.POSIXct(origin_str, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
+  
+  # Facteur de conversion en secondes
+  mult <- switch(trimws(unit_type),
+                 "hours" = 3600,
+                 "minutes" = 60,
+                 "seconds" = 1,
+                 "days" = 86400,
+                 3600) # Défaut
+  
+  # Calcul final et forçage UTC
+  final_time <- origin_dt + (time_val * mult)
+  return(with_tz(final_time, "UTC"))
+}
+
+nc_force <- nc_open(forcing_file)
+macro_tair <- ncvar_get(nc_force, "Tair") 
+nc_close(nc_force)
+
+# On utilise la fonction robuste que nous avions débuggée tout à l'heure
+macro_time <- force_utc_nc(forcing_file, varname = "time") 
+
+# Création du dataframe des Tmax journaliers régionaux
+df_macro <- data.frame(time = macro_time, Tair_macro = macro_tair - 273.15) %>%
+  filter(as.Date(time) %in% date_seq) %>%
+  mutate(date = as.Date(time)) %>%
+  group_by(date) %>%
+  summarise(Tmax_macro = max(Tair_macro, na.rm = TRUE), .groups = "drop")
+
+cat(sprintf("Success: df_macro created with %d summer days.\n", nrow(df_macro)))
+```
+
+```{r}
+# ==============================================================================
+# 8 (REVISED). POST-PROCESSING: EXTRACTING DAILY MICROCLIMATE DATA
+# ==============================================================================
+library(ncdf4)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(purrr)
+
+# 1. We assume df_macro is already computed from your ERA5 forcing file
+# (Keep the code for df_macro from the previous script)
+
+cat("Extracting daily Tmax from all MuSICA simulations...\n")
+nc_files <- list.files(out_nc_dir, pattern = "\\.nc$", full.names = TRUE)
+
+# 2. Map over all files and bind results into a massive daily dataframe
+df_daily_raw <- map_df(nc_files, function(f) {
+  
+  filename <- basename(f)
+  x_val <- as.numeric(str_extract(filename, "(?<=_X)\\d+"))
+  y_val <- as.numeric(str_extract(filename, "(?<=_Y)\\d+"))
+  
+  nc <- try(nc_open(f), silent = TRUE)
+  if(inherits(nc, "try-error")) return(NULL)
+  
+  raw_data <- try(get_variable(nc, "Tair_z"), silent = TRUE)
+  nc_close(nc)
+  
+  if(inherits(raw_data, "try-error") || is.null(raw_data)) return(NULL)
+  
+  # Process daily maximums without aggregating by summer
+  df_micro <- raw_data %>%
+    filter(nair == 1) %>% 
+    mutate(Tair_sim = Tair_z - 273.15) %>%          
+    filter(as.Date(time) %in% date_seq) %>%         
+    mutate(time = time - hours(2)) %>%              
+    mutate(date = as.Date(time)) %>%
+    group_by(date) %>%
+    summarise(Tmax_micro = max(Tair_sim, na.rm = TRUE), .groups = "drop")
+  
+  # Merge with Macroclimate, compute Delta Tmax, and keep the X/Y coordinates
+  df_micro %>%
+    inner_join(df_macro, by = "date") %>%
+    mutate(
+      Delta_Tmax = Tmax_micro - Tmax_macro,
+      x = x_val,
+      y = y_val
+    ) %>%
+    dplyr::select(x, y, date, Delta_Tmax) # Return daily rows for this pixel
+})
+
+# 3. Join the daily physical results with the structural LiDAR descriptors
+# Now, df_daily_metrics contains ~46,000 rows (all days for all plots)
+df_daily_metrics <- df_daily_raw %>%
+  inner_join(df_export, by = c("x", "y")) # %>%
+ # left_join(df_fpcs, by = c("x", "y")) # Ensure FPCs are definitely attached
+
+cat(sprintf("Extraction complete! Dataset contains %d daily observations.\n", 
+            nrow(df_daily_metrics)))
+```
+
+```{r}
+# ==============================================================================
+# STATISTICAL MODELING: VARIANCE PARTITIONING WITH CONTINUOUS FPCs
+# ==============================================================================
+library(mgcv)
+library(tidyverse)
+library(patchwork)
+library(ggeffects)
+
+# 1. Preparation of scaled continuous variables
+df_stats_hp <- df_daily_metrics %>% # Using the daily un-aggregated dataframe
+  mutate(
+    LAI_sc    = as.numeric(scale(LAI)),
+    fCover_sc = as.numeric(scale(fCover)),
+    Hmax_sc   = as.numeric(scale(Hmax)),
+    FPC1_sc   = as.numeric(scale(FPC1)),
+    FPC2_sc   = as.numeric(scale(FPC2)),
+    FPC3_sc   = as.numeric(scale(FPC3)),
+    date_factor = as.factor(date)
+  )
+
+# 2. Define the response variable and predictors
+resp_var <- "Delta_Tmax"
+preds <- c("s(LAI_sc)", 
+           "s(fCover_sc)",
+           "s(Hmax_sc)",
+           "ti(FPC1_sc, Hmax_sc)",
+           "s(FPC1_sc)", 
+           "s(FPC2_sc)", 
+           "s(FPC3_sc)"
+           )
+
+cat(sprintf("Running full variance decomposition for %s...\n", resp_var))
+
+# 3. Fit Full Model
+form_full <- as.formula(paste(resp_var, "~", paste(preds, collapse = " + "), "+ s(date_factor, bs='re')"))
+gam_full <- bam(form_full, data = df_stats_hp, family = scat(), method = "fREML", discrete = TRUE)
+r2_full <- summary(gam_full)$r.sq
+
+# 3.5 CONCURVITY DIAGNOSTICS (ON ADDITIVE MODEL)
+cat("\n--- Concurvity Diagnostics for Full Model ---\n")
+
+# A. Full concurvity (How much each smooth is explained by ALL others combined)
+# Values > 0.8 indicate severe collinearity/concurvity issues
+conc_full <- concurvity(gam_full, full = TRUE)
+print("Worst-case concurvity (Full):")
+print(round(conc_full["worst", ], 3))
+
+# B. Pairwise concurvity (To spot specific problematic pairs, e.g., Hmax vs VCI)
+conc_pair <- concurvity(gam_full, full = FALSE)
+print("Worst-case pairwise concurvity (FPC1 vs Hmax):")
+# Extracting specifically the intersection between FPC1 and Hmax
+idx_fpc1 <- which(rownames(conc_pair$worst) == "s(FPC1_sc)")
+idx_hmax <- which(colnames(conc_pair$worst) == "s(Hmax_sc)")
+cat("s(FPC1_sc) vs s(Hmax_sc):", round(conc_pair$worst[idx_fpc1, idx_hmax], 3), "\n")
+
+# 4. Fit Date-Only Model (Weather Baseline)
+form_date <- as.formula(paste(resp_var, "~ s(date_factor, bs='re')"))
+gam_date <- bam(form_date, data = df_stats_hp, family = scat(), method = "fREML", discrete = TRUE)
+r2_date <- summary(gam_date)$r.sq
+
+# 5. Compute Marginal R2 for each structural predictor (Leave-One-Out)
+loo_r2 <- numeric(length(preds))
+names(loo_r2) <- c("LAI", "fCover", "Hmax", "FPC1 (Top/Bottom)", "FPC2 (Height)", "FPC3 (Strata)")
+
+for (i in seq_along(preds)) {
+  remaining <- preds[-i]
+  form_red <- as.formula(paste(resp_var, "~", paste(remaining, collapse = " + "), "+ s(date_factor, bs='re')"))
+  mod_red <- bam(form_red, data = df_stats_hp, family = scat(), method = "fREML", discrete = TRUE)
+  loo_r2[i] <- r2_full - summary(mod_red)$r.sq
+}
+
+# 6. Compile into a dataframe
+df_res <- data.frame(
+  Component = c("Date (Weather)", names(loo_r2), "Residual"),
+  R2_abs    = c(r2_date, loo_r2, 1 - r2_full)
+) %>%
+  mutate(
+    # Normalize to 100%
+    Pct = (R2_abs / sum(R2_abs)) * 100,
+    Component = factor(Component, levels = rev(c("Date (Weather)", "LAI", "fCover", "Hmax",
+                                                 "FPC1 (Top/Bottom)", "FPC2 (Height)", "FPC3 (Strata)", "Residual")))
+  )
+
+# ==============================================================================
+# 7. INTERACTION MODEL & 3D VISUALIZATION (TESTING HYPOTHESIS 2)
+# ==============================================================================
+cat("\n--- Fitting Interaction Model (LAI x FPC1) ---\n")
+
+# Define formula with pure interaction term ti()
+# We keep main effects s() separate to isolate the synergistic effect
+form_interact <- as.formula(paste(resp_var, "~",
+                                  "s(LAI_sc, k=5) +",
+                                  "s(FPC1_sc, k=5) +",
+                                  "ti(LAI_sc, FPC1_sc, k=5) +", # Pure interaction
+                                  "s(fCover_sc, k=5) +",
+                                  "s(Hmax_sc, k=5) +",
+                                  "s(FPC2_sc, k=5) +",
+                                  "s(FPC3_sc, k=5) +",
+                                  "s(date_factor, bs='re')"
+                                  ))
+
+gam_interact <- bam(form_interact, data = df_stats_hp, family = scat(), method = "fREML", discrete = TRUE)
+
+# Check if the interaction term is statistically significant
+summary_interact <- summary(gam_interact)
+print(summary_interact$s.table["ti(LAI_sc,FPC1_sc)", ])
+
+conc_pair_updated <- concurvity(gam_interact, full = FALSE)
+print(round(conc_pair_updated$worst, 2))
+
+# ------------------------------------------------------------------------------
+# 3D Surface Plots using vis.gam()
+# ------------------------------------------------------------------------------
+# Define custom margins for 3D plots
+par(mfrow = c(1, 2), mar = c(2, 2, 3, 1))
+
+# Plot A: 3D Perspective plot (Great for presentations)
+# theta controls horizontal rotation, phi controls vertical rotation
+vis.gam(gam_interact, 
+        view = c("LAI_sc", "FPC1_sc"), 
+        plot.type = "persp", 
+        theta = 45, phi = 30, 
+        ticktype = "detailed",
+        color = "topo", # Can be "heat", "topo", "cm", "terrain"
+        zlab = "Predicted Delta Tmax",
+        xlab = "LAI (Scaled)", ylab = "FPC1 (Scaled)",
+        main = "3D Interaction Surface:\nLAI vs Canopy Shape")
+
+# Plot B: Contour plot (Better for academic papers)
+# Generates a 2D topographical map of the interaction
+vis.gam(gam_interact, 
+        view = c("LAI_sc", "FPC1_sc"), 
+        plot.type = "contour", 
+        color = "topo", 
+        contour.col = "black",
+        xlab = "LAI (Scaled)", ylab = "FPC1 (Scaled)",
+        main = "Contour Map of Cooling Effect")
+
+# Add a point layer showing where the actual data points are
+# Helps to avoid over-interpreting areas with no data (extrapolation)
+points(df_stats_hp$LAI_sc, df_stats_hp$FPC1_sc, pch = 16, cex = 0.3, col = rgb(0,0,0,0.2))
+
+par(mfrow = c(1, 1)) # Reset par
+```
+
+```{r}
+# ==============================================================================
+# VISUALIZATION 1: VARIANCE DECOMPOSITION
+# ==============================================================================
+p_decomp <- ggplot(df_res, aes(x = 1, y = Pct, fill = Component)) +
+  geom_col(position = "stack", color = "white", linewidth = 1) +
+  geom_text(
+    data = df_res %>% filter(Pct > 1.5), # Only label significant chunks
+    aes(label = sprintf("%s\n%.1f%%", Component, Pct)),
+    position = position_stack(vjust = 0.5),
+    color = "white", fontface = "bold", size = 3.5
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Date (Weather)"    = "#440154",
+      "LAI"               = "#31688e",
+      "fCover"            = "#35b779",
+      "Hmax"              = "#90d743",
+      "FPC1 (Top/Bottom)" = "#fde724",
+      "FPC2 (Height)"     = "#fca50a",
+      "FPC3 (Strata)"     = "#d8576b",
+      "Residual"          = "grey75"
+    )
+  ) +
+  coord_flip() +
+  labs(
+    title    = "Complete Variance Decomposition of Delta Tmax",
+    subtitle = sprintf("Full R² = %.3f | Weather R² = %.3f", r2_full, r2_date),
+    x = NULL, y = "Percentage of Variance Explained (%)"
+  ) +
+  theme_void(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", hjust = 0),
+        legend.position = "none")
+
+print(p_decomp)
+
+
+# ==============================================================================
+# VISUALIZATION 2: PARTIAL EFFECT CURVES (CONTINUOUS SHAPE)
+# ==============================================================================
+
+# A. LAI Saturation Curve
+pred_lai <- ggpredict(gam_full, terms = "LAI_sc [all]", type = "fixed") %>%
+  as.data.frame() %>%
+  mutate(Real_Value = (x * sd(df_daily_metrics$LAI)) + mean(df_daily_metrics$LAI))
+
+p_sat <- ggplot(pred_lai, aes(x = Real_Value, y = predicted)) +
+  geom_line(linewidth = 1.2, color = "#31688e") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "#31688e") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(title = "A. LAI Saturation", x = "Leaf Area Index (LAI)", y = "Cooling Effect (°C)") +
+  theme_bw()
+
+# B. FPC1 (Top-Heavy vs Bottom-Heavy) Continuous Effect
+pred_fpc1 <- ggpredict(gam_full, terms = "FPC1_sc [all]") %>%
+  as.data.frame() %>%
+  mutate(Real_Value = (x * sd(df_daily_metrics$FPC1)) + mean(df_daily_metrics$FPC1))
+
+p_shape_fpc <- ggplot(pred_fpc1, aes(x = Real_Value, y = predicted)) +
+  geom_line(linewidth = 1.2, color = "#fde724") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.4, fill = "#fde724") +
+  labs(title = "B. Profile Shape Effect (FPC1)", 
+       subtitle = "Negative = Top-Heavy | Positive = Bottom-Heavy",
+       x = "FPC1 Score", y = "Relative Impact on Cooling (°C)") +
+  theme_bw()
+
+p_sat + p_shape_fpc
+```
+
+```{r}
+# ==============================================================================
+# VISUALIZATION 3: PARTIAL EFFECTS OF ARCHITECTURE (FPC1, FPC2, FPC3)
+# Holding LAI, fCover, and Weather constant at their mean values
+# ==============================================================================
+library(ggeffects)
+library(ggplot2)
+library(patchwork)
+
+cat("Computing marginal effects for Functional Principal Components...\n")
+
+# 1. FPC1 (Macro-Architecture Tensor)
+# We plot FPC1 across its range, for 3 representative heights: -1 SD, Mean (0), +1 SD
+pred_fpc1 <- ggpredict(gam_full, terms = c("FPC1_sc [all]", "Hmax_sc [-1.2, 0, 1.2]"))
+
+p_fpc1 <- ggplot(pred_fpc1, aes(x = x, y = predicted, color = group, fill = group)) +
+  geom_line(linewidth = 1.2) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  # Using a discrete color palette for the 3 height groups
+  scale_color_manual(
+    values = c("#fca50a", "#35b779", "#31688e"),
+    labels = c("Short (-1.2 SD)", "Average (Mean)", "Tall (+1.2 SD)")
+  ) +
+  scale_fill_manual(
+    values = c("#fca50a", "#35b779", "#31688e"),
+    labels = c("Short (-1.2 SD)", "Average (Mean)", "Tall (+1.2 SD)")
+  ) +
+  labs(
+    title = "A. Macro-Architecture: Interaction of Shape and Height",
+    subtitle = "Cooling effect of FPC1 depends on tree height (te(Hmax, FPC1))",
+    x = "FPC1 Score (Scaled)\n<-- Top-Heavy Profile       Bottom-Heavy Profile -->",
+    y = "Marginal Effect on Delta Tmax (°C)",
+    color = "Tree Height", fill = "Tree Height"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+
+# 2. FPC2 (Strata / Bimodality)
+pred_fpc2 <- ggpredict(gam_full, terms = "FPC2_sc [all]")
+
+p_fpc2 <- ggplot(pred_fpc2, aes(x = x, y = predicted)) +
+  geom_line(linewidth = 1.2, color = "#d8576b") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "#d8576b") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  labs(
+    title = "B. Effect of Vertical Dispersion (FPC2)",
+    x = "FPC2 Score (Scaled)\n<-- Unimodal               Bimodal -->",
+    y = "Effect on Delta Tmax (°C)"
+  ) +
+  theme_bw(base_size = 12)
+
+# 3. FPC3 (Complexity / Mid-story)
+pred_fpc3 <- ggpredict(gam_full, terms = "FPC3_sc [all]")
+
+p_fpc3 <- ggplot(pred_fpc3, aes(x = x, y = predicted)) +
+  geom_line(linewidth = 1.2, color = "#7a0403") +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "#7a0403") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  labs(
+    title = "C. Effect of Micro-Complexity (FPC3)",
+    x = "FPC3 Score (Scaled)\n<-- Simple                 Complex -->",
+    y = "Effect on Delta Tmax (°C)"
+  ) +
+  theme_bw(base_size = 12)
+
+# 4. Combine plots using patchwork layout
+# Top row spans full width (FPC1), bottom row splits FPC2 and FPC3
+final_plot <- p_fpc1 / (p_fpc2 + p_fpc3)
+
+print(final_plot)
+```
+
+```{r}
+# ==============================================================================
+# 8. HEATWAVE STRESS-TEST: VARIANCE DECOMPOSITION ON HOTTEST DAYS
+# ==============================================================================
+
+library(dplyr)
+
+# 1. Join macro weather data to your main dataset
+df_stats_hw <- df_stats_hp %>%
+  left_join(df_macro, by = "date")
+
+# 2. Check how many days exceed our threshold (e.g., 30°C)
+threshold_temp <- 30 
+
+hot_days_count <- df_macro %>% 
+  filter(Tmax_macro >= threshold_temp) %>% 
+  nrow()
+  
+cat(sprintf("Number of unique days with Tmax >= %d°C : %d\n", threshold_temp, hot_days_count))
+
+# 3. Create the heatwave subset
+df_heatwave <- df_stats_hw %>%
+  filter(Tmax_macro >= threshold_temp) %>%
+  # Drop unused dates so the random effect s(date_factor, bs='re') doesn't crash
+  mutate(date_factor = droplevels(date_factor)) 
+
+cat(sprintf("Total observations for the heatwave model: %d\n", nrow(df_heatwave)))
+
+# 1. Re-define the response variable just in case it was dropped
+resp_var <- "Delta_Tmax"
+
+# 2. Re-create the updated formula containing the interaction term
+form_full_updated <- as.formula(paste(resp_var, "~", 
+                                      "s(LAI_sc, k=5) +",
+                                      "s(fCover_sc, k=5) +",
+                                      "s(Hmax_sc, k=5) +",
+                                      "s(FPC1_sc, k=5) +", 
+                                      "ti(FPC1_sc, Hmax_sc, k=5) +", # Pure interaction
+                                      "s(FPC2_sc, k=5) +", 
+                                      "s(FPC3_sc, k=5) +",
+                                      "s(date_factor, bs='re')"))
+
+# 2. Re-fit the Full Model on the Heatwave Subset
+# Using the exact same formula you validated previously
+gam_hw_full <- bam(form_full_updated, 
+                   data = df_heatwave, 
+                   family = scat(), 
+                   method = "fREML", 
+                   discrete = TRUE)
+
+r2_hw_full <- summary(gam_hw_full)$r.sq
+
+# 3. Re-fit the Date-Only Model (Weather Baseline) on Heatwave Subset
+gam_hw_date <- bam(form_date, 
+                   data = df_heatwave, 
+                   family = scat(), 
+                   method = "fREML", 
+                   discrete = TRUE)
+
+r2_hw_date <- summary(gam_hw_date)$r.sq
+
+# 4. Compute Marginal R2 for each predictor (Leave-One-Out)
+# We recreate the list of predictors matching your updated formula
+preds_updated <- c("s(LAI_sc, k=5)", 
+                   "s(fCover_sc, k=5)",
+                   "s(Hmax_sc, k=5)",
+                   "s(FPC1_sc, k=5)", 
+                   "ti(FPC1_sc, Hmax_sc, k=5)", # The interaction term
+                   "s(FPC2_sc, k=5)", 
+                   "s(FPC3_sc, k=5)")
+
+loo_r2_hw <- numeric(length(preds_updated))
+names(loo_r2_hw) <- c("LAI", "fCover", "Hmax", "FPC1 (Top/Bottom)", 
+                      "FPC1 x Hmax (Interaction)", "FPC2 (Height)", "FPC3 (Strata)")
+
+cat("Computing Leave-One-Out R2 for Heatwave subset...\n")
+for (i in seq_along(preds_updated)) {
+  remaining <- preds_updated[-i]
+  form_red <- as.formula(paste(resp_var, "~", paste(remaining, collapse = " + "), "+ s(date_factor, bs='re')"))
+  
+  mod_red <- bam(form_red, data = df_heatwave, family = scat(), method = "fREML", discrete = TRUE)
+  loo_r2_hw[i] <- r2_hw_full - summary(mod_red)$r.sq
+}
+
+# 5. Compile the comparison dataframe (All Days vs Heatwaves)
+# We combine the results from your previous analysis (df_res) with the new one
+df_compare <- data.frame(
+  Condition = "Heatwaves (> 30°C)",
+  Component = c("Date (Weather)", names(loo_r2_hw), "Residual"),
+  R2_abs    = c(r2_hw_date, loo_r2_hw, 1 - r2_hw_full)
+) %>%
+  mutate(
+    Pct = (R2_abs / sum(R2_abs)) * 100,
+    Component = factor(Component, levels = rev(c("Date (Weather)", "LAI", "fCover", "Hmax",
+                                                 "FPC1 x Hmax (Interaction)", "FPC1 (Top/Bottom)", 
+                                                 "FPC2 (Height)", "FPC3 (Strata)", "Residual")))
+  )
+
+# Add a column "Condition" to your original df_res for binding
+# Assuming your original df_res from the previous script is still in memory
+df_res_all <- df_res %>%
+  mutate(Condition = "All Days") %>%
+  # Add an empty row for the interaction term so factors match
+  bind_rows(data.frame(Condition = "All Days", Component = "FPC1 x Hmax (Interaction)", R2_abs = 0, Pct = 0))
+
+df_final_plot <- bind_rows(df_res_all, df_compare) %>%
+  mutate(Condition = factor(Condition, levels = c("All Days", "Heatwaves (> 30°C)")))
+
+# ==============================================================================
+# 6. VISUALIZATION: SHIFT IN DRIVERS DURING HEATWAVES
+# ==============================================================================
+p_compare <- ggplot(df_final_plot, aes(x = Condition, y = Pct, fill = Component)) +
+  geom_col(position = "stack", color = "white", linewidth = 0.5) +
+  geom_text(
+    data = df_final_plot %>% filter(Pct > 2), # Only label chunks > 2% to avoid clutter
+    aes(label = sprintf("%.1f%%", Pct)),
+    position = position_stack(vjust = 0.5),
+    color = "white", fontface = "bold", size = 3.5
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Date (Weather)"            = "#440154",
+      "LAI"                       = "#31688e",
+      "fCover"                    = "#35b779",
+      "Hmax"                      = "#90d743",
+      "FPC1 x Hmax (Interaction)" = "#fde724", # Highlighting the interaction
+      "FPC1 (Top/Bottom)"         = "#fca50a",
+      "FPC2 (Height)"             = "#d8576b",
+      "FPC3 (Strata)"             = "#7a0403",
+      "Residual"                  = "grey75"
+    )
+  ) +
+  labs(
+    title = "Microclimate Drivers: All Weather vs Extreme Heat",
+    subtitle = "Forest architecture plays a much larger buffering role during heatwaves",
+    x = NULL, y = "Percentage of Variance Explained (%)",
+    fill = "Model Component"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(plot.title = element_text(face = "bold"),
+        panel.grid.major.x = element_blank(),
+        axis.text.x = element_text(face = "bold", size = 12))
+
+print(p_compare)
+
+library(vip)
+
+# 1. Define a custom prediction wrapper for the GAMM
+# We use predict() to get predictions, keeping the random effect structure
+pred_wrapper <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "response")
+}
+
+# 2. Run the permutation importance using RMSE
+# We shuffle each variable 10 times (nsim=10) and measure the increase in RMSE.
+p_importance <- vi(
+  gam_hw_full, 
+  method = "permute", 
+  train = df_heatwave, 
+  target = resp_var, 
+  feature_names = c("LAI_sc", "fCover_sc", "Hmax_sc", "FPC1_sc", "FPC2_sc", "FPC3_sc", "date_factor"),
+  metric = "rmse", # Changed to RMSE for direct physical interpretation (°C)
+  smaller_is_better = TRUE, # Vital when using error metrics like RMSE
+  pred_wrapper = pred_wrapper,
+  nsim = 10 
+)
+
+# 3. Plot the results
+p_vip <- vip(p_importance, geom = "col", aesthetics = list(fill = "#31688e")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Permutation Feature Importance (Heatwaves)",
+    subtitle = "Increase in prediction error (°C) when a structural trait is randomized",
+    x = "Forest Structure & Weather Variables",
+    y = "Importance (Increase in RMSE)"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+
+print(p_vip)
+
+# 2. Run the permutation importance using R-squared ("rsq")
+p_importance_r2 <- vi(
+  gam_hw_full, 
+  method = "permute", 
+  train = df_heatwave, 
+  target = resp_var, 
+  feature_names = c("LAI_sc", "fCover_sc", "Hmax_sc", "FPC1_sc", "FPC2_sc", "FPC3_sc", "date_factor"),
+  metric = "rsq", # The exact string expected for R-squared
+  smaller_is_better = FALSE, # Crucial: for R2, bigger is better
+  pred_wrapper = pred_wrapper,
+  nsim = 10 
+)
+
+# 3. Plot the results
+p_vip_r2 <- vip(p_importance_r2, geom = "col", aesthetics = list(fill = "#d8576b")) +
+  theme_bw(base_size = 14) +
+  labs(
+    title = "Permutation Feature Importance (Heatwaves)",
+    subtitle = "Decrease in model R² when a structural trait is randomized",
+    x = "Forest Structure & Weather Variables",
+    y = "Importance (Drop in R²)"
+  ) +
+  theme(plot.title = element_text(face = "bold"))
+
+print(p_vip_r2)
+```
+
+```{r}
+# ==============================================================================
+# PREPARATION: BUILDING THE 'df_hobo_real' DATASET
+# ==============================================================================
+library(sf)
+library(terra)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+
+cat("1. Extracting spatial LiDAR metrics at HOBO locations...\n")
+
+# Load HOBO locations
+sf_hobo <- st_read("in_files/data_Blois_utm31n.geojson", quiet = TRUE)
+
+# Combine your structural rasters into one multi-layer SpatRaster
+# (r_metrics_20m and r_fpcs must be in your R environment from previous steps)
+r_landscape_all <- c(r_metrics_20m[["LAI"]], 
+                     r_metrics_20m[["Hmax"]], 
+                     r_metrics_20m[["fCover"]], 
+                     r_fpcs)
+
+# Ensure FPC layer names are perfectly clean for the GAM
+names(r_landscape_all) <- c("LAI", "Hmax", "fCover", "FPC1", "FPC2", "FPC3")
+
+# Extract values exactly at HOBO coordinates
+df_hobo_spatial <- terra::extract(r_landscape_all, vect(sf_hobo))
+
+# Attach the real plot IDs from the geojson to the extracted data
+df_hobo_spatial$id_plot <- sf_hobo$id_plot
+
+# Clean up the dataframe (remove the internal terra ID column)
+df_hobo_spatial <- df_hobo_spatial %>% dplyr::select(-ID)
+
+cat("2. Processing temporal HOBO temperature data...\n")
+
+# Process the CSV to get daily Tmax and Delta_obs
+df_hobo_temp <- read.csv("in_files/Blois_data_temperature.csv") %>%
+  mutate(
+    datetime = as.POSIXct(datetime, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+    date = as.Date(datetime)
+  ) %>%
+  # Filter strictly for summer days and the correct sensor position
+  filter(
+    position_sensor == "a",
+    date %in% date_seq
+    # !(id_plot %in% ids_to_remove) # Uncomment if you have a specific exclusion list
+  ) %>%
+  # Aggregate to daily maximum
+  group_by(id_plot, date) %>%
+  summarise(Tmax_obs = max(t_hobo, na.rm = TRUE), .groups = "drop") %>%
+  # Join with macroclimate to calculate the cooling effect (Delta)
+  inner_join(df_macro, by = "date") %>%
+  mutate(Delta_obs = Tmax_obs - Tmax_macro)
+
+cat("3. Merging spatial and temporal data...\n")
+
+# Final merge to create the ultimate validation dataset
+df_hobo_real <- df_hobo_temp %>%
+  inner_join(df_hobo_spatial, by = "id_plot") %>%
+  # Remove any days/plots where LiDAR data might be NA (e.g., HOBO placed outside flight path)
+  drop_na(LAI, FPC1, Delta_obs)
+
+cat("--------------------------------------------------\n")
+cat(sprintf("Success! df_hobo_real created with %d daily observations.\n", nrow(df_hobo_real)))
+cat(sprintf("Number of unique HOBO plots matched with LiDAR: %d\n", length(unique(df_hobo_real$id_plot))))
+cat("--------------------------------------------------\n")
+```
+
+```{r}
+# ==============================================================================
+# EMPIRICAL VALIDATION: PREDICTING HOBO TEMPERATURES WITH GAMM
+# ==============================================================================
+library(mgcv)
+library(dplyr)
+library(ggplot2)
+library(Metrics) 
+
+# 1. Scale HOBO predictors using the TRAINING data parameters
+# This ensures the GAM evaluates the HOBOs in the exact same mathematical space
+df_hobo_test <- df_hobo_real %>%
+  mutate(
+    LAI_sc      = (LAI - mean(df_daily_metrics$LAI, na.rm = TRUE)) / sd(df_daily_metrics$LAI, na.rm = TRUE),
+    fCover_sc   = (fCover - mean(df_daily_metrics$fCover, na.rm = TRUE)) / sd(df_daily_metrics$fCover, na.rm = TRUE),
+    Hmax_sc     = (Hmax - mean(df_daily_metrics$Hmax, na.rm = TRUE)) / sd(df_daily_metrics$Hmax, na.rm = TRUE),
+    FPC1_sc     = (FPC1 - mean(df_daily_metrics$FPC1, na.rm = TRUE)) / sd(df_daily_metrics$FPC1, na.rm = TRUE),
+    FPC2_sc     = (FPC2 - mean(df_daily_metrics$FPC2, na.rm = TRUE)) / sd(df_daily_metrics$FPC2, na.rm = TRUE),
+    FPC3_sc     = (FPC3 - mean(df_daily_metrics$FPC3, na.rm = TRUE)) / sd(df_daily_metrics$FPC3, na.rm = TRUE),
+    date_factor = as.factor(date)
+  ) %>%
+  # Keep only dates that exist in the GAM's random effect baseline
+  filter(date_factor %in% levels(df_stats_hp$date_factor))
+
+# 2. Predict daily Delta Tmax for the 53 HOBO locations
+cat("Predicting temperatures for HOBO sensors using the trained GAM...\n")
+df_hobo_test$Delta_pred <- predict(gam_full, newdata = df_hobo_test, type = "response")
+
+# 3. Calculate validation metrics (comparing prediction vs reality)
+obs <- df_hobo_test$Delta_obs
+prd <- df_hobo_test$Delta_pred
+
+rmse_val <- rmse(obs, prd)
+r2_val   <- cor(obs, prd, use = "complete.obs")^2
+bias_val <- mean(prd - obs, na.rm = TRUE)
+
+cat("--------------------------------------------------\n")
+cat("GAM IN-SITU VALIDATION METRICS (53 HOBOs)\n")
+cat(sprintf("R-squared : %.3f\n", r2_val))
+cat(sprintf("RMSE      : %.2f °C\n", rmse_val))
+cat(sprintf("Bias      : %.2f °C\n", bias_val))
+cat("--------------------------------------------------\n")
+
+# 4. Plot Observed vs Predicted performance
+p_validation <- ggplot(df_hobo_test, aes(x = Delta_obs, y = Delta_pred)) +
+  geom_point(alpha = 0.5, color = "#287D8EFF") +
+  # 1:1 perfect prediction line
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red", linewidth = 1) +
+  # Actual regression line of the predictions
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  labs(
+    title = "Validation of the Spatial GAM against HOBO Sensors",
+    subtitle = sprintf("R² = %.2f | RMSE = %.2f °C | Bias = %.2f °C", r2_val, rmse_val, bias_val),
+    x = "Observed Cooling Effect (HOBO, °C)",
+    y = "Predicted Cooling Effect (GAM, °C)"
+  ) +
+  theme_bw() +
+  coord_fixed(ratio = 1) # Force square aspect ratio for visual accuracy
+
+print(p_validation)
+```
+
+```{r}
+# ==============================================================================
+# CORRECTIONS GAMM - CHAPITRE 1
+# Trois blocs indépendants, à insérer dans ton script principal
+# ==============================================================================
+
+
+# ==============================================================================
+# BLOC 1 : CRÉATION DU plot_id ET CORRECTION DE LA PSEUDO-RÉPLICATION
+# ==============================================================================
+# Problème : df_daily_metrics contient ~122 obs par pixel (une par jour).
+# Sans random effect par pixel, le GAMM traite ces 122 obs comme indépendantes
+# → pseudo-réplication → intervalles de confiance trop étroits, p-values faussées.
+# Solution : ajouter s(plot_id, bs='re') en plus de s(date_factor, bs='re').
+# ------------------------------------------------------------------------------
+
+# 1a. Créer un identifiant unique par pixel à partir des coordonnées
+# (si tu as déjà une colonne id stable, remplace plot_id par celle-là)
+df_daily_metrics <- df_daily_metrics %>%
+  mutate(plot_id = as.factor(paste0("X", x, "_Y", y)))
+
+# Vérification : nombre de pixels uniques
+cat(sprintf("Nombre de pixels uniques (plots) : %d\n", 
+            length(unique(df_daily_metrics$plot_id))))
+cat(sprintf("Nombre de jours uniques         : %d\n", 
+            length(unique(df_daily_metrics$date))))
+cat(sprintf("Total observations              : %d\n", nrow(df_daily_metrics)))
+
+# 1b. Recréer df_stats_hp avec le plot_id
+df_stats_hp <- df_daily_metrics %>%
+  mutate(
+    LAI_sc      = as.numeric(scale(LAI)),
+    fCover_sc   = as.numeric(scale(fCover)),
+    Hmax_sc     = as.numeric(scale(Hmax)),
+    FPC1_sc     = as.numeric(scale(FPC1)),
+    FPC2_sc     = as.numeric(scale(FPC2)),
+    FPC3_sc     = as.numeric(scale(FPC3)),
+    date_factor = as.factor(date),
+    plot_id     = plot_id  # déjà créé ci-dessus
+  )
+
+# 1c. Modèle corrigé avec double random effect (date + pixel)
+# s(date_factor, bs='re') : absorbe la variabilité météo journalière
+# s(plot_id,     bs='re') : absorbe la variabilité structurelle non expliquée par pixel
+# → les effets fixes (LAI, FPCs...) sont maintenant estimés sur la variance RÉSIDUELLE
+#   après déduction des deux sources de clustering
+
+form_full_corrected <- Delta_Tmax ~
+  s(LAI_sc,     k = 5) +
+  s(fCover_sc,  k = 5) +
+  s(Hmax_sc,    k = 5) +
+  s(FPC1_sc,    k = 5) +
+  s(FPC2_sc,    k = 5) +
+  s(FPC3_sc,    k = 5) +
+  s(date_factor, bs = "re") +   # Random effect temporel
+  s(plot_id,     bs = "re")     # Random effect spatial (correction pseudo-réplication)
+
+gam_full_corrected <- bam(
+  form_full_corrected,
+  data     = df_stats_hp,
+  family   = scat(),
+  method   = "fREML",
+  discrete = TRUE
+)
+
+cat("\n--- Résumé modèle corrigé (avec plot_id) ---\n")
+summary(gam_full_corrected)
+
+# 1d. Comparer R² avant/après correction (si très différent → pseudo-réplication était sévère)
+r2_full_corrected <- summary(gam_full_corrected)$r.sq
+cat(sprintf("\nR² modèle original  : %.3f\n", r2_full))
+cat(sprintf("R² modèle corrigé   : %.3f\n", r2_full_corrected))
+cat("(Si R² chute fortement → les FPCs expliquaient surtout la variance inter-pixel,\n")
+cat(" ce qui est écologiquement cohérent et n'invalide pas le résultat.)\n")
+
+
+# ==============================================================================
+# BLOC 2 : DIAGNOSTIC COMPLET DE CONCURVITÉ (MATRICE PAIRWISE COMPLÈTE)
+# ==============================================================================
+# Problème : la normalisation Z/Hmax injecte une dépendance géométrique entre
+# Hmax et les scores FPC. Il faut inspecter TOUTES les paires, pas seulement FPC1/Hmax.
+# Seuil d'alerte : worst > 0.8 (concurvité sévère), > 0.6 (modérée, à signaler).
+# ------------------------------------------------------------------------------
+
+library(corrplot)
+
+# 2a. Concurvité globale (chaque smooth vs TOUS les autres combinés)
+conc_full <- concurvity(gam_full_corrected, full = TRUE)
+
+cat("\n--- Concurvité globale (worst-case) ---\n")
+cat("Interprétation : proportion de chaque smooth expliquée par TOUS les autres\n")
+cat("Seuil critique : > 0.8 = problème sévère\n\n")
+print(round(conc_full["worst", ], 3))
+
+# Visualisation en barplot
+conc_df <- data.frame(
+  Smooth = names(conc_full["worst", ]),
+  Concurvity = as.numeric(conc_full["worst", ])
+) %>%
+  filter(!grepl("re\\)", Smooth)) %>%  # Exclure les random effects (toujours élevés)
+  arrange(desc(Concurvity))
+
+p_conc_global <- ggplot(conc_df, aes(x = reorder(Smooth, Concurvity), 
+                                      y = Concurvity, 
+                                      fill = Concurvity > 0.8)) +
+  geom_col() +
+  geom_hline(yintercept = 0.8, linetype = "dashed", color = "red",  linewidth = 1) +
+  geom_hline(yintercept = 0.6, linetype = "dashed", color = "orange", linewidth = 0.8) +
+  annotate("text", x = 1, y = 0.82, label = "Seuil critique (0.8)", 
+           color = "red", hjust = 0, size = 3.5) +
+  annotate("text", x = 1, y = 0.62, label = "Seuil modéré (0.6)",  
+           color = "orange", hjust = 0, size = 3.5) +
+  scale_fill_manual(values = c("FALSE" = "#31688e", "TRUE" = "#d73027"), 
+                    guide = "none") +
+  coord_flip() +
+  labs(
+    title    = "Concurvité Globale des Termes du GAMM",
+    subtitle = "Chaque barre = proportion d'un smooth expliqué par TOUS les autres",
+    x        = NULL,
+    y        = "Worst-case Concurvity"
+  ) +
+  theme_bw(base_size = 12)
+
+print(p_conc_global)
+
+# 2b. Concurvité pairwise (matrice complète)
+conc_pair <- concurvity(gam_full_corrected, full = FALSE)
+
+# Extraire uniquement les termes structurels (exclure random effects)
+structural_terms <- grep("^s\\((LAI|fCover|Hmax|FPC)", 
+                          rownames(conc_pair$worst), value = TRUE)
+
+mat_pair <- conc_pair$worst[structural_terms, structural_terms]
+
+cat("\n--- Matrice pairwise worst-case (termes structurels uniquement) ---\n")
+print(round(mat_pair, 3))
+
+# Heatmap de la matrice pairwise
+corrplot(
+  mat_pair,
+  method      = "color",
+  type        = "upper",
+  addCoef.col = "black",
+  number.cex  = 0.85,
+  tl.col      = "black",
+  tl.srt      = 45,
+  diag        = FALSE,
+  col         = colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(200),
+  title       = "Concurvité Pairwise (Worst-case) — Termes Structurels",
+  mar         = c(0, 0, 2, 0)
+)
+
+# 2c. Identifier automatiquement les paires problématiques
+cat("\n--- Paires avec concurvité > 0.6 (à signaler) ---\n")
+pairs_problem <- which(mat_pair > 0.6 & upper.tri(mat_pair), arr.ind = TRUE)
+if (nrow(pairs_problem) == 0) {
+  cat("Aucune paire problématique détectée (toutes < 0.6). ✓\n")
+} else {
+  for (i in seq_len(nrow(pairs_problem))) {
+    r <- pairs_problem[i, 1]
+    c <- pairs_problem[i, 2]
+    cat(sprintf("  %-25s vs %-25s : %.3f %s\n",
+                rownames(mat_pair)[r],
+                colnames(mat_pair)[c],
+                mat_pair[r, c],
+                ifelse(mat_pair[r, c] > 0.8, "⚠ SÉVÈRE", "→ modérée")))
+  }
+}
+
+# 2d. SI concurvité Hmax/FPC1 > 0.6 : stratégie de remédiation
+# Option 1 — Supprimer Hmax du modèle (FPCs normalisés par Hmax l'absorbent en partie)
+# Option 2 — Remplacer s(Hmax) + s(FPC1) par te(Hmax, FPC1) uniquement
+# Option 3 — Construire FPCs sur profils en hauteur ABSOLUE (normalize_height = FALSE)
+#             pour briser la dépendance géométrique
+
+cat("\n--- Stratégie suggérée si Hmax/FPC1 > 0.6 ---\n")
+cat("Tester le modèle sans s(Hmax_sc) séparé (absorbé par FPC2 qui code la hauteur) :\n\n")
+
+form_no_hmax <- Delta_Tmax ~
+  s(LAI_sc,    k = 5) +
+  s(fCover_sc, k = 5) +
+  # s(Hmax_sc, k = 5) +  # Supprimé : colinéaire avec FPC2
+  s(FPC1_sc,   k = 5) +
+  s(FPC2_sc,   k = 5) +   # FPC2 code déjà la hauteur relative du couvert
+  s(FPC3_sc,   k = 5) +
+  s(date_factor, bs = "re") +
+  s(plot_id,     bs = "re")
+
+gam_no_hmax <- bam(form_no_hmax, data = df_stats_hp, 
+                    family = scat(), method = "fREML", discrete = TRUE)
+
+cat(sprintf("R² modèle sans Hmax : %.3f (vs %.3f avec Hmax)\n",
+            summary(gam_no_hmax)$r.sq, r2_full_corrected))
+cat("Si R² quasi-identique → Hmax redondant avec FPC2, le retirer est justifié.\n")
+
+
+# ==============================================================================
+# BLOC 3 : JUSTIFICATION DE scat() VS GAUSSIEN
+# ==============================================================================
+# Problème : scat() (t de Student scalée) est peu standard.
+# Il faut montrer que les résidus d'un GAM gaussien ont des queues lourdes,
+# ce qui motive le choix d'une famille robuste.
+# ------------------------------------------------------------------------------
+
+# 3a. Ajuster d'abord un modèle gaussien de référence
+gam_gaussian <- bam(
+  form_full_corrected,   # Même formule, famille différente
+  data     = df_stats_hp,
+  family   = gaussian(),
+  method   = "fREML",
+  discrete = TRUE
+)
+
+resid_gauss <- residuals(gam_gaussian, type = "deviance")
+
+# 3b. Tests de normalité des résidus
+cat("\n--- Diagnostic de normalité des résidus (modèle gaussien) ---\n")
+
+# Shapiro-Wilk (limité à 5000 obs par construction)
+set.seed(42)
+idx_sw <- sample(length(resid_gauss), min(5000, length(resid_gauss)))
+sw_test <- shapiro.test(resid_gauss[idx_sw])
+cat(sprintf("Shapiro-Wilk (n=%d) : W = %.4f, p = %.2e\n",
+            length(idx_sw), sw_test$statistic, sw_test$p.value))
+
+# Kurtosis (excès > 1 justifie scat)
+kurtosis_val <- mean((resid_gauss - mean(resid_gauss))^4) / 
+                sd(resid_gauss)^4 - 3
+cat(sprintf("Kurtosis en excès   : %.3f\n", kurtosis_val))
+cat(ifelse(abs(kurtosis_val) > 1,
+           "→ Queues lourdes confirmées : scat() JUSTIFIÉ ✓\n",
+           "→ Distribution proche du normal : scat() non nécessaire\n"))
+
+# 3c. Visualisation diagnostique (4 panneaux)
+par(mfrow = c(2, 2))
+
+# Panneau 1 : QQ-plot
+qqnorm(resid_gauss, main = "QQ-Plot des Résidus (GAM Gaussien)",
+       pch = 16, cex = 0.3, col = rgb(0, 0, 0, 0.3))
+qqline(resid_gauss, col = "red", lwd = 2)
+
+# Panneau 2 : Histogramme avec courbe normale théorique superposée
+hist(resid_gauss, breaks = 80, freq = FALSE,
+     main = "Distribution des Résidus", xlab = "Résidus", col = "lightblue")
+curve(dnorm(x, mean = mean(resid_gauss), sd = sd(resid_gauss)),
+      add = TRUE, col = "red", lwd = 2)
+
+# Panneau 3 : Résidus vs valeurs ajustées (détection hétéroscédasticité)
+plot(fitted(gam_gaussian), resid_gauss,
+     pch = 16, cex = 0.3, col = rgb(0, 0, 0, 0.3),
+     xlab = "Valeurs ajustées", ylab = "Résidus",
+     main = "Résidus vs Ajustés")
+abline(h = 0, col = "red", lwd = 2)
+lines(lowess(fitted(gam_gaussian), resid_gauss), col = "blue", lwd = 2)
+
+# Panneau 4 : Comparaison AIC Gaussien vs scat
+aic_gauss <- AIC(gam_gaussian)
+aic_scat  <- AIC(gam_full_corrected)
+barplot(
+  c(Gaussien = aic_gauss, `scat()` = aic_scat),
+  col  = c("lightblue", "salmon"),
+  main = "Comparaison AIC",
+  ylab = "AIC (plus bas = meilleur)"
+)
+cat(sprintf("\nAIC Gaussien : %.1f\n", aic_gauss))
+cat(sprintf("AIC scat()   : %.1f\n", aic_scat))
+cat(sprintf("ΔAIC = %.1f → %s\n",
+            aic_gauss - aic_scat,
+            ifelse(aic_gauss - aic_scat > 10,
+                   "scat() fortement préféré ✓",
+                   "différence marginale, gaussien suffisant")))
+
+par(mfrow = c(1, 1))
+
+# 3d. Phrase type pour le manuscrit
+cat("\n--- Formulation pour la section Méthodes ---\n")
+cat("Les résidus du modèle additif gaussien présentent un excès de kurtosis de",
+    round(kurtosis_val, 2), "\n")
+cat("(confirmé par le test de Shapiro-Wilk : p <", 
+    format(sw_test$p.value, scientific = TRUE, digits = 2), ").\n")
+cat("En conséquence, une famille scat() (t de Student scalée) a été retenue,\n")
+cat("laquelle s'avère plus robuste aux queues lourdes et améliore le fit\n")
+cat(sprintf("(ΔAIC = %.1f en faveur de scat()).\n", aic_gauss - aic_scat))
+
+
+# ==============================================================================
+# RÉCAPITULATIF FINAL : QUEL MODÈLE RETENIR ?
+# ==============================================================================
+cat("\n\n=== RÉCAPITULATIF DES MODÈLES TESTÉS ===\n")
+cat(sprintf("%-45s R² = %.3f\n", "1. Original (sans plot_id)",      r2_full))
+cat(sprintf("%-45s R² = %.3f\n", "2. Corrigé (+ plot_id RE)",       r2_full_corrected))
+cat(sprintf("%-45s R² = %.3f\n", "3. Sans Hmax (si concurvité)",    summary(gam_no_hmax)$r.sq))
+cat("\nRecommandation : utiliser le modèle 2 (corrigé) comme modèle principal,\n")
+cat("et le modèle 3 comme test de sensibilité si Hmax/FPC concurvité > 0.6.\n")
+```

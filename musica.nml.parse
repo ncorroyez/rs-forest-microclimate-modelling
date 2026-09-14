@@ -1,0 +1,86 @@
+&setupctl
+debug = .true.
+restin_filename = ""
+forcing_filename = "in_files/musica_in_Blois.nc"
+history_filename = "out_files/musica_out_Blois_pt47.nc"
+history_variables = "layer_thickness", "z_soil", "dz_soil", "t_soil", "w_soil", "t_air", "w_air", "wind" 
+forcing_height = 15.62
+forcing_timestep = 3600
+site_latitude = 44.493653
+site_longitude = -0.956092
+site_altitude = 39.18
+time2gmt = 0
+air_resolution_level = 2
+air_grid_type = 2
+n_soil_layer = 15
+n_leaf_age = 3
+weathergen_flag = .false.
+turb_flag = .true.
+lnf_nearfield_flag = .true.
+isotope_flag = .false.
+ozone_flag = .false.
+ocs_flag = .false.
+alt_lma_flag = .false.
+soluteinsoil_flag = .false.
+param_files_path = "./in_files/"
+n_species = 1
+species_names = "musica_veg1"
+soil_file_name = "./in_files/musica_soil.nml"
+ascii_level = 0
+photosynthetic_limitation_flag = 3
+clumping_factor = 0.7
+/
+
+&snowctl
+snow_model_flag = 0
+snow_input = .true.
+init_snow = 5
+tsnow_threshold = 1
+tmelt_threshold = 1
+snow_ddf = 5
+/
+
+&isotopectl
+neumann_iso_bot_flag = .true.
+fca_soil = 30
+constant_peclet_flag = .false.
+d_alim_flag = .false.
+d_alim = 0 0 
+test_case = .false.
+test_case_id = -1
+water_volume_perlai = 10 10 
+co2_h2o_eq_degree_inleaf = 1 1 
+constant_peclet_flag = .true.
+peclet_inleaf = 0.2 0.2 
+/
+
+&soluteinsoilctl
+solute_test_case = .false.
+solute_test_case_id = 2
+solute_alim_flag = .false.
+solute_alim = 0
+solute_cm = 4
+solute_cr = 170
+/
+
+&ozonectl
+finite_go3_apo_flag = .false.
+nonzero_go3_wet_flag = .false.
+nonzero_go3_dry_flag = .false.
+go3_dry_cut_model_type = 1
+go3_soil_type = 2
+v_bot_wf = 1e-06 1e-06 
+k_chim_cst = 0 0 
+ro3_soil_min = 21.15
+ro3_soil_k = 0.015
+/
+
+&allocationctl
+resp_maintenance_method = "musica_original"
+c_alloc_method = "musica_original"
+/
+
+&templatectl
+iamprivate = 1
+/
+

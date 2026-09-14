@@ -1,0 +1,548 @@
+  ! -*- Mode: F90 -*-
+  
+  ! ----------------------------------------------------------------------------
+  !
+  ! MuSICA v3.0 leaf namelist
+  !
+  ! Setup one plant type for a MuSICA simulation
+  !
+  ! ----------------------------------------------------------------------------
+  !
+  ! Contact and bug report: jerome.ogee@inra.fr
+  !
+  ! Notes
+  !   1. Names are case insensitive.
+  !      DEBUG = .true.
+  !      debug = .True.
+  !   2. Commenting out (or deleting) lines uses the default settings for that option.
+  !      ! debug=.true.
+  !   3. File names, directories and any other string must be quoted with
+  !      single (') or double (") quotes.
+  !      file = 'file.nc'
+  !      string = "file.nc"
+  !   4. Strings are case sensitive.
+  !      string1 = 'anotherstring'
+  !      string2 = 'AnotherString'
+  !   5. All paths are either absolute or relative to the MuSICA executable.
+  !      file = '/absolute/path/to/file.nc'
+  !      file = 'relative/path/to/file.nc'
+  !   6. Multiple values for an array are delimited by commas.
+  !      array = 0, 1, 2, 3
+  !      chararray = 'one, 'two', 'three'
+  !   7. Logical switches are case insensitive .true., .false. or .t., .f.
+  !      switch = .True.
+  !
+  ! ----------------------------------------------------------------------------
+  
+  ! ----------------------------------------------------------------------------
+  ! MUSICA - general flags - namelist of musica module
+  &leafmusicactl
+  !
+  ! Light interception
+  !
+  ! Light extinction is computed
+  ! using either a leaf inclination index (broad-leaf or grass species) for leaf_shape=1
+  ! or a shoot clumping index (needle-leaf species) for leaf_shape=2
+  LEAF_SHAPE_IN = 2
+  !
+  ! Allometry
+  !
+  ! MuSICA does not compute plant height and crown depth yet and
+  ! these parameters must be specified and are then assumed constant
+  ! for the entire simulation.
+  ! ICOS labelling report: 75% quantile canopy height pinus pinaster (summer 2020)
+  CANOPY_HEIGHT_TOP = 11.23
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! PHENOLOGY - phenology and stem respiration specific flags - namelist of phenology module
+  &leafphenologyctl
+  !
+  ! Phenology
+  !
+  ! MuSICA does not compute phenology yet and the leaf area
+  ! of the different leaf age classes (maximum of 3 cohorts)
+  ! must be specified.
+  !
+  ! This is done using a phenology file in ASCII, with a daily time step
+  ! only 2 lines of headers and containing the following variables
+  ! separated by a comma, space or tabulation:
+  !
+  !  Name     | Format      | Description                        |  Unit
+  !-----------------------------------------------------------------------------
+  ! YEAR      | (1X,    I4) | Year                               |
+  ! JDAY      | (1X,    I3) | Day of year                        |  1-366
+  ! LAI_1     | (IX,  F5.2) | Whole-sided leaf area of cohort 1  |  m2/m2
+  ! LAI_2     | (IX,  F5.2) | Whole-sided leaf area of cohort 2  |  m2/m2
+  ! LAI_3     | (IX,  F5.2) | Whole-sided leaf area of cohort 3  |  m2/m2
+  ! AGE_1     | (IX,  F5.3) | Age of cohort 1                    |  yr
+  ! AGE_2     | (IX,  F5.3) | Age of cohort 2                    |  yr
+  ! AGE_3     | (IX,  F5.3) | Age of cohort 3                    |  yr
+  !
+  !
+  ! Note the precision on leaf age must be with 3 digits. If only one cohort,
+  ! keep the columns but fill them with zeros.
+  ! Alternatively, if you do not have a phenology file, you can prescribe
+  ! some parameters to simulate a simplistic leaf area time series, based
+  ! on budburst date and maximum leaf area per cohort.
+  ! In this case, the maximum leaf age must not exceed 3 yrs and the relative
+  ! age should be smaller than 1, while the budburst date should be comprised
+  ! between 1 and 365
+  ! Note the max. leaf area per cohort is on a whole-sided area basis.
+  !
+  ! >>> case phenology file
+  PHENOLOGY_FILE = "./in_files/phenology_pinus_pinaster.csv"
+  ! PHENOLOGY_FILE = "none"
+  !
+  ! >>> case no phenology file and modelling
+  ! BUG: phenology_model needed (and with valid name) even if phenology_file exists...
+  PHENOLOGY_MODEL = "musica"
+  ! ICOS labelling report: LAI overstory (summer 2020) 1.6*2/3 (from one-sided to whole-sided per cohort (3 in total))
+  LAI_MAX_PER_COHORT = 1.1
+  !
+  ! MuSICA does not compute phenology yet and the leaf area
+  ! of the different leaf age classes (maximum of 3 cohorts)
+  ! must be specified.
+  ! >>> needed in all cases for other age-dependant parameters
+  BUDBURST_DATE = 110
+  LEAF_AGE_MAX_IN = 2.8
+  RELATIVE_AGE_FIRSTMAX_IN = 0.05
+  RELATIVE_AGE_LASTMAX_IN = 0.83
+  !
+  ! >>>>>> case castanea phenology
+  !BUDBURST_DAY_START_1 = 
+  !BUDBURST_TEMP_2 = 
+  !BUDBURST_F_CRIT = 
+  !LEAF_DEV_F_CRIT = 
+  !LEAF_SEN_DL_START = 
+  !LEAF_SEN_TEMP_START = 
+  !LEAF_SEN_X = 
+  !LEAF_SEN_Y = 
+  !LEAF_SEN_F_CRIT = 
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! ALLOMETRY - leaf allometry specific flags - namelist of allometry module
+  &leafallometryctl
+  !
+  ! Allometry
+  !
+  ! MuSICA does not compute plant height and crown depth yet and
+  ! these parameters must be specified and are then assumed constant
+  ! for the entire simulation.
+  !
+  ! It also uses the so-called "beta" distribution to describe, 
+  ! for each cohort, the leaf area profile within the crown.
+  ! For this, the mean relative height within the crown and 
+  ! its standard deviation must be specified for each cohort.
+  ! This is done by defining a mean height and standard
+  ! deviation at a young age (defined as RELATIVE_AGE_FIRSTMAX*LEAF_AGE_MAX)
+  ! and at an old age (defined as RELATIVE_AGE_LASTMAX*LEAF_AGE_MAX)
+  ! and assuming these parameters vary linearly between these two ages 
+  ! and remain constant values outside this age range (i.e. type I parameter)
+  !
+  ALLOMETRY_FILE = "allometry.csv"
+  CANOPY_HEIGHT_TOP = 11.23
+  CANOPY_HEIGHT_BOTTOM = 8.0
+  !
+  LAI_RELATIVE_HEIGHT_MEAN_YOUNG = 0.704
+  LAI_RELATIVE_HEIGHT_MEAN_OLD = 0.538
+  LAI_RELATIVE_HEIGHT_SDEV_YOUNG = 0.160
+  LAI_RELATIVE_HEIGHT_SDEV_OLD = 0.133
+
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! LEAF_LEVEL - leaf level flags - namelist of leaf_level_fluxes module
+  &leaflevelctl
+  !
+  ! Leaf boundary-layer conductance
+  !
+  ! Both the size of an individual leaf or needle
+  ! and the size of the entire shoot
+  ! should be specified, as forced and free
+  ! convection depend on different leaf dimensions.
+  ! 
+  ! For free convection, a shelter factor for the
+  ! shoot can also be specified (DEFAULT = 1.)
+
+  LEAF_SIZE = 0.0024
+  SHOOT_SIZE = 0.24
+  SHOOT_SHELTER = 2.1
+  
+  ! Leaf photosynthesis model
+  !  
+  ! The leaf photosynthesis model is the one
+  ! described by Farquhar, von Caemerrer and Berry (1980)
+  ! In the current version of MuSICA, 
+  ! Vmax/Jmax/Rd and quantuum yield depend on:
+  ! - leaf temperature with an optimum temperature,
+  ! - leaf age
+  !
+  ! Vmax/Jmax are age-dependent type II parameters
+  ! while Rd and quantuum yield are type I parameters
+
+  ! From Ogée et al. (GCB 2003) Topt is 38.3C for vm and 31.8+0.16*Tmax,-1 for jm
+  C3_PHOTOSYNTHESIS = .true.
+  T_OPT_JMAX = 35.0
+  T_OPT_VMAX = 38.3
+
+  ! From Ogée et al. (GCB 2003) jm=35 and vm=25, while qy = 0.109
+  ! From JJ (in Ogée et al. (GCB 2003) vm goes from ca. 55 at 0.14yr to 30 at 2.33yr, and
+  ! jm goes from ca. 130 at 0.14yr to 60 at 2.33yr
+  VM25_YOUNG = 55e-6
+  VM25_OLD = 30e-6
+  JM25_YOUNG = 130e-6
+  JM25_OLD = 60e-6
+
+  ! From new analysis
+  TETA_JMAX = 0.95
+  QY_YOUNG = 0.18
+  QY_OLD = 0.09
+
+  ! From Ogée et al. (GCB 2003) rd=0.31
+  RDAY_25C_YOUNG = 0.31e-6
+  RDAY_25C_OLD = 0.31e-6
+  RDAY_INHIBITION_FACTOR = 0.5
+
+  ! Because Vmax/Jmax do not depend on canopy height
+  LMA_EXTINCTION_FACTOR = 0.0
+
+  ! Stomatal conductance model
+  !
+  ! In the current version, 3 different stomatal conductance models
+  ! can be used:
+  !
+  !  1. The Leuning model   : gs = g0 + mA/(Cs-Gama) * 1/(1+D/D0)
+  !  2. The Ball-Berry model: gs = g0 + mA/ Cs       * rhs
+  !  3. The Tuzet model     : gs = g0 + mA/(Ci-Gama)
+  !
+  ! NOTE: when PHOTOSYNTHETIC_LIMITATION_FLAG = 1 or 3 in run.def, then
+  ! the Leuning and Ball-Berry models g0 and m parameters are functions
+  ! of predawn leaf water potentials (i.e. updated only once a day) 
+  ! while in Tuzet model g0 and m are functions of the instantaneous 
+  ! leaf water potential
+  ! This means that the threshold value for GS_HX_HALF is very different 
+  ! between the different model types because relative to predawn (h_pd) or
+  ! instanteneous (h_x) leaf water potentials...
+  !
+  ! In all cases (regardless of the stomatal conductance model or the type of
+  ! stomatal vs. biochemical limitations, the response curve is described by
+  ! a sigmoid curve of leaf xylem water potential (MPa) below a certain
+  ! threshold corresponding to a 50% reduction, ie,
+  !
+  ! 1 / (1 + (h_xylem/gs_hx_half)^gs_hx_shape)
+  !
+  ! if yes stomata on one side of the leaf only
+  HYPOSTOMATOUS = .true.
+  !
+
+  GS_MODEL_FLAG = 4
+  GS_SLOPE      = 12.
+  GS_VPD_HALF   = 2500.
+  GS_INTERCEPT  = 8.e-3
+  GS_MIN        = 8.e-3
+  GS_HX_HALF    = -1.3
+  GS_HX_SHAPE   = 3.5
+
+  ! nigh-time conductance
+  GS_MAX_NIGHT      = 8.e-3
+  GS_VPD_HALF_NIGHT = 100000.
+
+  ! Mesophyl conductance
+  !
+  ! In the current version, mesophyll
+  ! conductance (molCO2/m2/s) is constant and used
+  ! solely for isotope discrimination
+  ! as the Vmax/Jmax parameters are
+  ! usually given relative to Ci, not Cc
+  !
+  ! From Montpied et al. (2009) for sun Beech leaves
+  GM_FLAG = .false.
+  GM_MAX = 0.125
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! RADIATION - radiative transfer specific flags - namelist of radiative_transfer module
+  &leafradiationctl
+  !
+  ! Light interception
+  !
+  ! Light extinction is computed
+  ! using either a leaf inclination index (broad-leaf or grass species)
+  ! or a shoot clumping index (needle-leaf species)
+  !
+  ! The shoot clumping index is defined as 1 - 4.STAR
+  ! where STAR is the silhouette to total-area ratio
+  ! and lies between 0 and < 1:
+  ! - a clumping of 0 means no clumping (or self-shading)
+  ! - a clumping of nearly 1 means nearly complete over-shading
+  !
+  ! The leaf inclination index lies from -1 (erectophile) to
+  ! 0 (spherical) to +1 (plagiophile)
+  ! Mean leaf zenithal angle (LZA) can be approximated from the leaf
+  ! inclination index (LII) and vice cersa using:
+  !
+  ! LZA = 57.5*(1. - LII)**(LOG(90.0/57.5)/LOG(2.))
+  ! LII = 1 - (LZA/57.5)**(LOG(2.)/LOG(90.0/57.5))
+  !
+  !      panophile    erectophile   spherical
+  !      ------------------------------------
+  ! LZA      0            90            57.5
+  ! LII     +1            -1               0
+  !
+  ! >>> case LEAF_SHAPE=1 (broad-leaf or grass species)
+
+!   LEAF_INCLINATION_INDEX_YOUNG = 
+!   LEAF_INCLINATION_INDEX_OLD   = 
+
+  ! >>> case LEAF_SHAPE=2 (needle-leaf species)
+
+  SHOOT_CLUMPING_INDEX_YOUNG = 0.76
+  SHOOT_CLUMPING_INDEX_OLD   = 0.16
+
+  ! Light rediffusion and thermal emmissions
+  
+  ! from Berbigier & Bonnefond (1995) (also used in Ogee et al. 2003)
+  RAU_LEAF_VIS_YOUNG = 0.090
+  TAU_LEAF_VIS_YOUNG = 0.014
+  RAU_LEAF_NIR_YOUNG = 0.454
+  TAU_LEAF_NIR_YOUNG = 0.214
+  EPSI_LEAF_YOUNG = 0.98
+  !
+  RAU_LEAF_VIS_OLD = 0.090
+  TAU_LEAF_VIS_OLD = 0.014
+  RAU_LEAF_NIR_OLD = 0.454
+  TAU_LEAF_NIR_OLD = 0.214
+  EPSI_LEAF_OLD = 0.98
+
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! RAIN - rain interception specific flags - namelist of rain_intercept module
+  &leafrainctl
+  !
+  ! Rain interception
+  !
+  ! Throughfall is computed from the radiative
+  ! transfer model assuming rain always falls 
+  ! with a zenithal angle (no wind effect)
+  !
+  ! Rain interception is computed using
+  ! an average water storage capcity expressed
+  ! per whole-sided foliage area (mm m2(leaf)-1)
+  !
+  ! Reference: Deardroff (1978), Rutter et al. (1971), Whitehead & Kelliher (1991)
+  !
+  ! CANOPY_WATER_STORAGE_CAPACITY_PERLAI 
+  ! Min.    value = 0.0
+  ! Default value = 0.05 (as in SiB2)
+  ! Max.    value = 0.3
+  !
+  ! Wetted fraction is a power function of
+  ! the ratio between maximum and actual leaf
+  ! water storage
+  !
+  ! PWET_EXPONENT
+  ! Min.    value = 0.0  (full wettability)
+  ! Default value = 0.67 (as in Deardorff, ISBA, SiB...)
+  !               = 1.0  (as in Rutter, Whitehead,...)
+  ! Max.    value = 2.0  (constant wettability angle)
+
+  CANOPY_WATER_STORAGE_CAPACITY_PERLAI = 0.05
+  PWET_EXPONENT = 0.67
+
+  /
+  
+  ! ----------------------------------------------------------------------------
+  ! ROOT - root specific flags - namelist of leaf_level_fluxes module
+  &leafrootctl
+  !
+  ! Root distribution
+  !
+  ! The vertical distribution of root biomass is needed
+  ! to compute spatial variations of root water uptake
+  ! but also root respiration. For the moment, only
+  ! constant profiles are prescribed:
+
+  ! - either using a "beta" distribution from the
+  !   soil surface to a total rooting depth (m)
+  !   prescribed by the user, and characterised by its
+  !   mean fine root length density (m/m3), 
+  !   mean depth and standard deviation (case ROOT_PROFILE_FLAG = 1)
+  !
+  ! - or from a fine root length density profiles prescribed
+  !   at user-defined depths explicitly (case ROOT_PROFILE_FLAG = 2)
+  !
+  ! - or using an exponential distribution as described in Li et al.
+  !   (J Hydrolo 2001) from the soil surface to a total rooting depth (m)
+  !   prescribed by the user, and characterised by fraction of the root length
+  !   density in the top 10% of the root zone (case ROOT_PROFILE_FLAG = 3)
+  !
+  ! - or using a constant root fraction down to a total rooting depth (m)
+  !   prescribed by the user (case ROOT_PROFILE_FLAG = 4)
+  !
+  ! In addition, mean fine root radius (m)
+  ! and total xylem resistance (s/m) are needed for water uptake
+
+  ROOT_PROFILE_FLAG = 1
+
+  ! all cases of ROOT_PROFILE_FLAG  
+  ! Note: it is automatically reset to the bottom level of closest the soil layer
+  
+  DEPTH_ROOT_MAX = 1.0
+
+  ! case ROOT_SHOOT_RATIO is unknown
+  ! If root-shoot ratio is unknown, make sure it is set to zero or the line to set it is commented
+  ! LENGTH_ROOT_MEAN = 2.3e3
+!   LENGTH_ROOT_MEAN =
+  !
+  ! case LENGTH_ROOT_MEAN is unknown
+  ! If mean length root is unknown, make sure it is set to zero or the line to set it is commented
+  ROOT_SHOOT_RATIO = 0.3
+
+  ! >>> case ROOT_PROFILE_FLAG = 1
+
+  DEPTH_ROOT_MEAN = 0.20
+  DEPTH_ROOT_SDEV = 0.15
+  
+  ! >>> case ROOT_PROFILE_FLAG = 2
+
+  ! After M. Bakker's data
+  !    we added a bit at 75cm to account for fine roots in soils below trunks 
+  !    (not sampled by Mark and cos...), but probably even higher...
+  N_DEPTH_ROOT = 6
+  DEPTH_ROOT =  0.0 0.075 0.225 0.45 0.75 1.05
+  !LENGTH_ROOT = 0.663e4 0.739e4 0.367e4  0.124e4  0.0133e4  0.0
+  LENGTH_ROOT = 0.663e4 0.739e4 0.367e4 0.124e4 0.05e4 0.0
+   !
+  ! case ROOT_PROFILE_FLAG = 3
+!   DEPTH_ROOT_F10 = 
+  
+  ! Root hydraulics
+  !
+  ! Mean fine root radius (m) and total xylem resistance (s/m)
+  ! are needed for water uptake. For the latter, values are
+  ! usually deduced from measurements of the ratio R between soil-leaf
+  ! hydraulic potential drops and transpiration rates and expressed
+  ! in MPa/(m/s) or MPa/(kg/m2/s)
+  !
+  ! To convert in s/m, you need to assume that soil-root resistance
+  ! is negligible compared to xylem resistance (i.e. not likely during
+  ! drought) and then you have:
+  !
+  ! E = rhow * sum(lroot*dz)/rx *dh = dY/R
+  !
+  ! with dY = rhow*g*dh/1e6 in MPa and dh in m(H2O)
+  !
+  ! and so:
+  !
+  ! rx [s/m] = 1e6 * SUM(l_root*dz) * R [MPa.m2.s/kg] / (cte_grav)
+  !
+  ! that needs eventually to be divided by WLAI if R is expressed
+  ! relative to whole-sided leaf area, not soil area
+
+  ! root radius could be higher (see Williams et al. 1996, 2001)
+  !RADIUS_ROOT_MEAN = 0.35e-3
+  ! adjusted to fit biomass data with density of 0.4g/cm3
+  RADIUS_ROOT_MEAN = 0.3e-3
+  ! as rundef
+!  RADIUS_ROOT_MEAN = 0.35e-3
+
+  ! ROOT xylem resistance is deduced assuming a value of 
+  ! R = 38*1e3 MPa/(kg/m2/s) (for P. Pinaster, Loustau et al. 1998,
+  ! where fluxes are expressed on whole-sided needle area basis, ie, R is 7.7
+  ! times lower if sapflux expressed on soil area basis, as LAI is 3 and conversion
+  ! LAI to WLAI of 2.57)
+  ! and conversion from MPa/(kg/m2/s) to s/m assuming SUM(l_root*dz)=2.1e4 m2/m3
+  ! (from M. Bakker data, see below), this gives
+  ! r = 1e6 * 2.1e4 * (38e3/7.7) / 9.81 = 10.5e12 s/m
+  XYLEM_TOTAL_RESISTANCE = 7.e12
+
+  ! TOTAL xylem capacitance is deduced from Loustau et al. 1998
+  ! for P. Pinaster of 0.036+0.077+0.025=0.14kg/m2/MPa on a whole-sided
+  ! needle area basis
+  TREE_WATER_STORAGE_CAPACITY = 0.14
+
+  ! Root cavitation (only if ROOT_CAVITATION_FLAG = .true. (.false.))
+  ! Total xylem resistance increases with xylem water potential
+  ! according to:
+  ! 
+  ! r = r / MAX(0.001, 1./(1. + EXP(slope/25.*(hxylem -P50))))
+  !
+  ! where r=XYLEM_TOTAL_RESISTANCE
+  !       slope is expressed in %.MPa-1
+  !       and P50 is in MPa
+
+  ROOT_CAVITATION_P50 = -3.0
+  ROOT_CAVITATION_SLOPE = -50.
+
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! TURBULENT - turbulent transfer specific flags - namelist of turbulent_transfer module
+  &leafturbulentctl
+  !
+  ! Wind attenuation
+  !
+  ! Wind attenuation is a function of leaf
+  ! area density profiles but also
+  ! a drag coefficient that accounts for 
+  ! all canopy elements and their mutual interference.
+  ! Typical values for this parameter are around 0.2
+  !
+  ! Reference: Massman and Weil (1999), BLM, 91, 81-107
+  !
+  ! Min.    value = 0.1
+  ! Default value = 0.2
+  ! Max.    value = 0.4
+  !
+  CANOPY_DRAG_COEFFICIENT = 0.2
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! ALLOCATION - namelist of allocation module
+  &treeallocationctl
+  !
+  ! Carbon allocation and respiration
+  !
+  ! So far, MuSICA does not incorporate a full
+  ! carbon cycle model and so respiratory terms
+  ! are simply scaled using living biomass (in kgDM/m2) and 
+  ! basal respiration rates (mol(CO2)/kgDM/s) and Q10 values 
+  !
+  ! Stem respiration rates are assumed to depend on
+  ! air temperature and are scaled between crown
+  ! and non-crown areas assuming all the branch biomass
+  ! is inside the crown
+  ! Leaf respiration in calculated on a leaf area basis
+  ! (see below) and root respiration is incorporated
+  ! in total soil respiration, parameterised in the
+  ! soil parameter file.
+  !
+
+  ! from 1997 values!!!
+  TRUNK_BIOMASS = 9.0
+  BRANCH_BIOMASS = 1.36
+  BASAL_RESP_15C_WOOD = 0.07e-6
+  Q10_WOOD = 2.05
+  !
+  NSC_TURNOVER = 4.
+
+  ! Casa allocation parameters from Xia et al. (2017), Table 1, biome 4 (deciduous broadleaf forest)
+  ! paramaters are given for each phenology phase
+  !
+  ! original:
+  ! CASA_ALPHA_LEAF = 0.0, 0.8, 0.35, 0.0
+  ! CASA_ALPHA_WOOD = 0.0, 0.1, 0.25, 0.0
+  ! CASA_ALPHA_FROOT = 1.0, 0.1, 0.4, 1.0
+  ! CASA_MU_LEAF = 4.e-8, 4.e-8, 4.e-8, 4.e-8 ! in s-1
+  ! CASA_MU_WOOD = 1.e-9, 1.e-9, 1.e-9, 1.e-9 ! in s-1
+  ! CASA_MU_FROOT = 3.e-9, 3.e-9, 3.e-9, 3.e-9 ! in s-1
+
+  ! modified:
+!  CASA_ALPHA_WOOD = 0.0, 0.5, 0.384615385, 0.0
+!  CASA_ALPHA_FROOT = 1.0, 0.5, 0.615384615, 1.0
+!  CASA_MU_WOOD = 1.e-9, 1.e-9, 1.e-9, 1.e-9 ! in s-1
+!  CASA_MU_FROOT = 3.e-9, 3.e-9, 3.e-9, 3.e-9 ! in s-1
+  /

@@ -15,3 +15,19 @@ Rplot.png
 # Outputs generated at runtime
 out_files/
 outputs/
+
+# --- harmonisation 2026-09-14: keep the repo push to code+docs only ---
+in_files/
+in_files_native20/
+SAFRAN/
+Plots/
+transfer/
+prep_site_forcing/
+03_RESULTS/
+*.log
+# reversibility archives (local safety net, not for the remote)
+_archive_harmonisation_2026-09-14/
+_archive_redaction_2026-09-14/
+chapter1/manuscript/_ARCHIVE_perime_2026-09-12/
+# oversized data csvs (GitHub 100MB/file limit)
+chapter1/_reference/config_musica/inputs/

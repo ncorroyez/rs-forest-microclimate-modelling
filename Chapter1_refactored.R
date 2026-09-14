@@ -610,9 +610,9 @@ run_musica_one <- function(plot_row, scenario, out_nc_file, forcing_file, musica
   tryCatch({
     callmusica(
       musica.param = list(setupctl = list("clumping_factor" = fcover, "forcing_filename" = forcing_file, "history_filename" = out_nc_file, "forcing_height" = hmax + 2)),
-      leaf.param = list(musica_veg1 = list("phenology" = phenology, "allometry" = allom, "leafphenologyctl" = list("lai_max_per_cohort" = lai),
-                                           "leafallometryctl" = list("canopy_height_top" = hmax, "canopy_height_bottom" = 1), "leafmusicactl" = list("canopy_height_top" = hmax))),
-      musica.cmd = musica_cmd, keep.tmp = FALSE, out.netcdf = TRUE
+      leaf.param = list(musica_leaf = list("phenology" = phenology, "allometry" = allom, "leafphenologyctl" = list("lai_max_per_cohort" = lai),
+                                          "leafallometryctl" = list("canopy_height_top" = hmax, "canopy_height_bottom" = 1), "leafmusicactl" = list("canopy_height_top" = hmax))),
+      musica.cmd = musica_cmd, keep.tmp = FALSE, out.netcdf = TRUE, out.df = FALSE
     )
   }, error = function(e) cat(sprintf("ERROR on %s: %s\n", basename(out_nc_file), e$message)))
   invisible(out_nc_file)

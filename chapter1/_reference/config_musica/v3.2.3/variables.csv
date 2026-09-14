@@ -1,0 +1,546 @@
+! Copyright 2011-2026 INRAE
+!
+! Licensed under the EUPL, Version 1.2 or later.
+!
+! You may not use this work except in compliance with the License.
+! You may obtain a copy of the License at:
+!
+! https://joinup.ec.europa.eu/software/page/eupl
+!
+! Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" basis,
+! WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+! See the License for the specific language governing permissions and limitations under the License.
+!
+!--------------------------------------------------------------------
+!
+!             MuSICA output variables for history or restart files
+!
+!    history name, ALMA name, long name, unit, dim flag
+!
+!   The flag "dim_flag" gives the dimension of the variable and
+!    is decoded as follows:
+!
+!     dim_flag =  1 * time_flag         (0 or 1)
+!              +  2 * pts_terre_flag    (0 or 1)
+!              +  4 * air_layer_flag    (0 or 1)
+!              +  8 * soil_layer_flag   (0 or 1)
+!              + 16 * veg_layer_flag    (0 or 1)
+!              + 32 * species_flag      (0 or 1)
+!              + 64 * leaf_age_flag     (0 or 1)
+!
+!--------------------------------------------------------------------
+
+! -----------------
+! FORCING VARIABLES
+! -----------------
+! non-ALMA variables
+time, time, Local hours since the beginning of the simulation, s,1
+latitude, latitude, Latitude, degrees,2
+longitude, longitude, Longitude, degrees,2
+
+! ALMA variables
+sw_down_ref, SWdown, Surface incident shortwave radiation, W/m^2,1
+lw_down_ref, LWdown, Surface incident longwave radiation, W/m^2,1
+precip_ref, Precip, Total precipitation rate, kg/m^2/s,1
+rain_fall_ref, Rainf, Rainfall rate, kg/m^2/s,1
+snow_fall_ref, Snowf, Snowfall rate, kg/m^2/s,1
+pb_ref, PSurf, Surface pressure, Pa,1
+t_air_ref, Tair, Near surface air temperature, K,1
+q_air_ref, Qair, Near surface specific humidity, kg/kg,1
+w_air_ref, Wair, Near surface specific humidity, mol/mol,1
+co2_air_ref, CO2air, Near surface CO2 concentration, ppmv,1
+wind_ref, Windspeed, Near surface wind speed, m/s,1
+wind_speed_ref, Wind_speed, Near surface wind speed, m/s,1
+wind_n_ref, Wind_N, Near surface northerly wind speed, m/s,1
+wind_e_ref, Wind_E, Near surface easterly wind speed, m/s,1
+wind_dir_ref, Wind_dir, Near surface wind direction, degree,1
+
+! optional
+wt_depth, WTDEPTH, Water Table Depth, m,1
+h_sbl, h_sbl , Surface boundary layer height , m ,1
+
+! Climate forcing at h_sbl
+t_air_hsbl, t_air_hsbl, Air temperature at h_sbl, K,1
+q_air_hsbl, q_air_hsbl, Air specific humidity at h_sbl, kg/kg,1
+co2_air_hsbl, co2_air_hsbl, Air CO2 mixing ratio at h_sbl, ppmv,1
+wind_hsbl, wind_hsbl, Windspeed at h_sbl, m/s,1
+gradm_hsbl, gradm_hsbl, Windspeed difference between h_sbl and z_ref, m/s,1
+gradc_hsbl, gradc_hsbl, Scalar difference between h_sbl and z_ref, s/m,1
+
+! daily meteo variables from Dietrich et al. (Annals of Forest Science 2019)
+grhds, grhds, Daily sum of global radiation on horizontal surface, MJ/m^2/day, 1
+rrds, rrds, Daily sum of precipitation, kg/m^2/day, 1
+sddm, sddm, Daily mean of saturation deficit, hPa, 1
+tadm, tadm, Daily mean of 2m air temperature, degC, 1
+tadn, tadn, Daily minimum of 2m air temperature, degC, 1
+tadx, tadx, Daily maximum of 2m air temperature, degC, 1
+wsdm, wsdm, Daily mean of windspeed, m/s, 1
+
+! --------------------
+! STRUCTURAL VARIABLES
+! --------------------
+species_name, species_name, Species name, -,32
+soiltype_name, soiltype_name, Soil type name, -,2
+relative_height, relative_height, Height relative to vegetation height, -,4
+layer_thickness, layer_thickness, Thickness of each air layer, -,4
+
+! --------------------
+! ALLOMETRY VARIABLES
+! --------------------
+veget_height_top, veget_height_top, Maximum vegetation height, m, 1
+leaf_area_profile, leaf_area_profile, Whole sided leaf area profile, m^2/m^2, 113
+leaf_mass_area_profile, leaf_mass_area_profile, Whole sided leaf mass area profile, kg/m^2, 49
+leaf_mass_profile, leaf_mass_profile, profile of leaf mass, kgDM/m^2, 113
+f_lma, f_lma, profile of leaf mass fraction, -, 49
+running_sw_abs_total, running_sw_abs_total, profile of leaf running total, W/m^2, 113
+running_total_sw_down_ref, running_total_sw_down_ref, total SW downwelling during growth phase, W/m^2, 97
+sw_sum_over_leaf_type, sw_sum_over_leaf_type, profile of leaf instant_ratio, -, 49
+alternate_lma, alternate_lma, profile of leaf alternate_lma, -, 113
+alternate_lma2, alternate_lma2, profile of leaf alternate_lma2, -, 113
+alternate_f_lma, alternate_f_lma, profile of leaf alternate_k_lma, -, 49
+alt_lma_profile, alt_lma_profile, profile of leaf alt_lma, -, 49
+
+cumulative_la_profile, cumulative_la_profile, cumulative profile of leaf area, -,17
+
+! --------------------
+! PHENOLOGY VARIABLES
+! --------------------
+t_min_day, t_min_day, min daily near surface air temperature, K, 1
+t_max_day, t_max_day, max daily near surface air temperature, K, 1
+t_mean_day, t_mean_day, mean daily near surface air temperature, K, 1
+leaf_area, leaf_area, Whole sided leaf area, m^2/m^2, 97
+phenology_phase, phenology_phase, phenological phase, -, 97
+slai_max_per_cohort, slai_max_per_cohort, maximum leaf area per cohort, -, 97
+sbudburst_date, sbudburst_date, budburst date per cohort, -, 97
+sleaf_age_max, sleaf_age_max, leaf age max per cohort, -, 97
+srelative_age_firstmax, srelative_age_firstmax, relative age first max per cohort, -, 97
+srelative_age_lastmax, srelative_age_lastmax, relative age last max per cohort, -, 97
+T_acclim, T_acclim, Temperature acclimation for photosynthesis, K, 1
+f_acclim, f_acclim, Temperature acclimation factor for photosynthesis, -, 1
+bb_temp_cum, bb_temp_cum, castanea cumulated temperature for budburst, -, 33
+ld_temp_cum, ld_temp_cum, castanea cumulated temperature for leaf development, -, 33
+ls_temp_cum, ls_temp_cum, castanea cumulated temperature for leaf development, -, 33
+budburst_date_cast, budburst_date_cast, castanea budburst date, day, 33
+leaf_exp_date, leaf_exp_date, castanea leaf full expension date, day, 33
+leaf_sen_dl_date, leaf_sen_dl_date, castanea date of daylength onset of leaf senescence, day, 33
+
+! ------
+! FLUXES
+! ------
+! reference level
+rg_extatm, rg_extatm, Top-of-atmosphere solar radiation, W/m^2, 1
+lw_net_ref, LWnet, Net longwave radiation at reference level, W/m^2, 1
+sw_net_ref, SWnet, Net shortwave radiation at reference level, W/m^2, 1
+rnet_ref, Rnet, Net radiation (shortwave + longwave) at reference level, W/m^2, 1
+radia_down_ref_beam_vis, radia_down_ref_beam_vis, Incident radiation above vegetation (visible), W/m^2, 1
+radia_down_ref_beam_nir, radia_down_ref_beam_nir, Incident radiation above vegetation (near IR), W/m^2, 1
+hsens_ref, Qh, Sensible heat flux at reference level, W/m^2, 1
+elat_ref, Qle, Latent heat flux at reference level, W/m^2, 1
+flux_co2_ref, NEE, Net Ecosystem Exchange, gC/m^2/s, 1
+jtair_ref, Sh, Sensible heat air storage at reference level, W/m^2, 1
+jwair_ref, Sle, Latent heat air storage at reference level, W/m^2, 1
+jcair_ref, Sco2, CO2 air storage at reference level, gC/m^2/s, 1
+u_star, Wind_frict, Surface friction velocity at reference level, m/s, 1
+flux_tau, Qtau, Momentum flux, N/m^2, 1
+! storage_heat_tot, storage_heat_tot, Total ecosystem heat storage, W/m^2, 1
+zr_over_LMO, zr_over_LMO, Monin-Obukhov stability parameter, -, 1
+LMO, LMO, Monin-Obukhov length scale, m, 1
+disp_height, disp_height, Displacement height, m, 1
+evap_tot, Evap, Total evapotranspiration, kg/m^2/s, 1
+ra_soil_coeff, ra_soil_coeff, Coefficent for computing aerodynamic resistance at soil surface, -, 1
+et_crop_FAO, et_crop_FAO, Evapotranspiration of FAO reference crop in understorey, kg/m^2/s, 1
+tl_crop_FAO, tl_crop_FAO, Leaf temperature of the FAO reference crop in the understorey, K, 1
+
+! soil level
+rnet_soil, Rnet_soil, Soil net radiation, W/m^2, 1
+hsens_soil, Qh_soil, Soil sensible heat flux, W/m^2, 1
+elat_soil, Qle_soil, Soil latent heat flux, W/m^2, 1
+flux_co2_soil, Qco2_soil, Soil net CO2 flux, gC/m^2/s, 1
+flux_co2_soil_SS, Qco2_soil_SS, Steady-state soil net CO2 flux, gC/m^2/s, 1
+resp_h, resp_h, Heterotrophic respiration, umol/m^2/s, 1
+storage_heat_soil, Qg, Soil heat flux, W/m^2, 1
+sw_down_soil, sw_down_soil, Solar downward radiation at soil level, W/m^2, 1
+sw_abs_soil, sw_abs_soil, Solar absorbed radiation by soil, W/m^2, 1
+sw_abs_soil_vis, sw_abs_soil_vis, Absorbed visible radiation by soil, W/m^2, 1
+sw_abs_soil_nir, sw_abs_soil_nir, Absorbed near IR radiation by soil, W/m^2, 1
+lw_abs_soil, lw_abs_soil, Thermal IR absorbed radiation by soil, W/m^2, 1
+lw_up_soil, lw_up_soil, Thermal IR emmited radiation by soil, W/m^2, 1
+p_sun_soil, p_sun_soil, Soil sunlit fraction, -, 1
+
+! in each vegetation layer
+rnet_cum, Rnet_z, Net radiation flux profile, W/m^2,5
+sw_abs_leaf_layer, sw_abs_leaf_layer, Short wave absorbed by leaf per layer, W/m^2,5
+hsens_cum, Qh_z, Sensible heat flux profile, W/m^2,5
+elat_cum, Qle_z, Latent heat flux profile, W/m^2,5
+flux_co2_cum, Qco2_z, CO2 flux profile, gC/m^2/s,5
+jtair_cum, Sh_z, Sensible heat air storage profile, W/m^2,5
+jwair_cum, Sle_z, Latent heat air storage profile, W/m^2,5
+jcair_cum, Sco2_z, CO2 air storage profile, gC/m^2/s,5
+
+! gpp per level
+gpp_z, gpp_z, GPP per level, umolCO2/m^2/s,49
+gpp_z_leaf, gpp_z_leaf, GPP per level normalised by LAI, umolCO2/m^2/s,49
+gpp_z_dry, gpp_z_dry, dry leaf GPP per level, umolCO2/m^2/s,49
+gpp_z_dry_leaf, gpp_z_dry_leaf, dry leaf GPP per level normalised by LAI, umolCO2/m^2/s,49
+
+! radiative fluxes per leaf type
+p_sun_leaf, p_sun_leaf, Canopy sunlit fraction, -,113
+
+sw_abs_leaf_vis_sunlit_dry, sw_abs_leaf_vis_sunlit_dry, Absorbed radiation sunlit dry(visible), W/m^2, 113
+sw_abs_leaf_vis_shaded_dry, sw_abs_leaf_vis_shaded_dry, Absorbed radiation shaded dry(visible), W/m^2, 113
+sw_abs_leaf_vis_sunlit_wet, sw_abs_leaf_vis_sunlit_wet, Absorbed radiation sunlit wet(visible), W/m^2, 113
+sw_abs_leaf_vis_shaded_wet, sw_abs_leaf_vis_shaded_wet, Absorbed radiation shaded wet(visible), W/m^2, 113
+sw_abs_leaf_vis_age, sw_abs_leaf_vis_age, Absorbed radiation (visible), W/m^2, 113
+
+sw_abs_leaf_nir_sunlit_dry, sw_abs_leaf_nir_sunlit_dry, Absorbed radiation sunlit dry(near IR), W/m^2, 113
+sw_abs_leaf_nir_shaded_dry, sw_abs_leaf_nir_shaded_dry, Absorbed radiation shaded dry(near IR), W/m^2, 113
+sw_abs_leaf_nir_sunlit_wet, sw_abs_leaf_nir_sunlit_wet, Absorbed radiation sunlit wet(near IR), W/m^2, 113
+sw_abs_leaf_nir_shaded_wet, sw_abs_leaf_nir_shaded_wet, Absorbed radiation shaded wet(near IR), W/m^2, 113
+sw_abs_leaf_nir_age, sw_abs_leaf_nir_age, Absorbed radiation (near IR), W/m^2, 113
+
+lw_abs_leaf_sunlit_dry, sw_abs_leaf_sunlit_dry, Absorbed radiation sunlit dry(thermal IR), W/m^2, 113
+lw_abs_leaf_shaded_dry, sw_abs_leaf_shaded_dry, Absorbed radiation shaded dry(thermal IR), W/m^2, 113
+lw_abs_leaf_sunlit_wet, sw_abs_leaf_sunlit_wet, Absorbed radiation sunlit wet(thermal IR), W/m^2, 113
+lw_abs_leaf_shaded_wet, sw_abs_leaf_shaded_wet, Absorbed radiation shaded wet(thermal IR), W/m^2, 113
+lw_abs_leaf_age, lw_abs_leaf_age, Absorbed radiation (thermal IR), W/m^2, 113
+
+! per species
+vmax_25, Vcmax25, Maximum carboxylation capacity at 25 degC for whole-sided leaf area, umol/m^2/s, 33
+darkresp_25, Rd25, Leaf dark respiration at 25 degC for whole-sided leaf area, umol/m^2/s, 33
+transpir, transpir, Transpiration rate, kg/m^2/s, 33
+gpp, gpp, Gross primary productivity, umol/m^2/s, 33
+netassim, netassim, Net assimilation rate, umol/m^2/s, 33
+resp_m_foliage, resp_m_foliage, Respiration from foliage maintenance, umol/m^2/s, 33
+resp_m_wood, resp_m_wood, Respiration from woody stems maintenance, umol/m^2/s, 33
+resp_m_froots, resp_m_froots, Respiration from fine roots maintenance, umol/m^2/s, 33
+resp_g_foliage, resp_g_foliage, Respiration from foliage growth, umol/m^2/s, 33
+resp_g_wood, resp_g_wood, Respiration from woody stems growth, umol/m^2/s, 33
+resp_g_froots, resp_g_froots, Respiration from fine roots growth, umol/m^2/s, 33
+resp_foliage, resp_foliage, Respiration from foliage, umol/m^2/s, 33
+resp_wood, resp_wood, Respiration from woody stems, umol/m^2/s, 33
+resp_froots, resp_froots, Respiration from fine roots, umol/m^2/s, 33
+l_root, l_root, fine root length density, m/m^3, 40
+l_root_daily, l_root_daily, effective fine root length density, m/m^3, 41
+!
+sw_abs_species, sw_abs_species, Absorbed solar radiation for each species, W/m^2,33
+
+! --------------
+! SOIL VARIABLES
+! --------------
+! grid variables
+z_soil, z_soil, Soil depth, m, 8
+dz_soil, dz_soil, Soil layer thickness, m, 8
+porosity_soil, porosity_soil, Soil total porosity, m^3/m^3, 8
+w_soil_sat, w_soil_sat, Soil water content at saturation, m^3/m^3, 8
+w_soil_residual, w_soil_residual, Residual soil water content, m^3/m^3, 8
+w_wilt, w_wilt, Soil water content at wilting point or -1.5MPa, m^3/m^3, 8
+w_fcap, w_fcap, Soil water content at field capacity or -0.33kPa, m^3/m^3, 8
+
+! ALMA variables (output in soil_transfer)
+w_soil_bulk, SoilMoistTot, Total soil water content, kg/m^2,1
+
+! non-ALMA variables (output in musica)
+rh_soil, rh_soil, Soil air relative humidity, MPa, 9
+h_soil, h_soil, Soil water potential, MPa, 9
+t_soil, T_soil, Soil temperature, K, 9
+w_soil, w_soil, Soil water content, m^3/m^3, 9
+theta_soil, theta_soil, Relative soil water saturation, -, 9
+capillary_cap, capillary_cap, Capillary water storage capacity, m^-1, 9
+co2_soil, co2_soil, Soil CO2 mixing ratio, ppmv, 9
+dt_soil, dt_soil, Soil module internal time step, s, 1
+nstep_soil, nstep_soil, Soil module time step counter, -, 1
+nrestart_soil, nrestart_soil, Soil module restart counter, -, 1
+niter_soil, niter_soil, Soil module iteration counter, -, 1
+knoconvergence, knoconvergence, Soil module convergence counter, -, 1
+prop_noconvergence, prop_noconvergence, Soil module no-convergence proportion, -, 1
+knobalance, knobalance, Soil module unbalance counter, -, 1
+prop_nobalance, prop_nobalance, Soil module unbalance proportion, -, 1
+knobalancetot, knobalancetot, Soil module global unbalance counter, -, 1
+nlayer_nobalance, nlayer_nobalance, Soil module unbalanced layer counter, -, 1
+soil_nobalance, soil_nobalance, Soil module unbalance proportion by layer, -, 9
+
+! non-ALMA variables (output in soil_transfer)
+q_h2o_soil_liq, q_h2o_soil_liq, Soil liquid water flux, kg/m^2/s, 9
+q_h2o_soil_vap, q_h2o_soil_vap, Soil vapour water flux, kg/m^2/s, 9
+q_h2o_soil, q_h2o_soil, Soil water flux, kg/m^2/s, 9
+q_h2o_soil_cracks, q_h2o_soil_cracks, Soil liquid water flux through cracks, kg/m^2/s, 9
+evap_soil, evap_soil, Soil evaporation flux, kg/m^2/s, 1
+fh_xylem, fh_xylem, Xylem water potential drought response function, MPa, 33
+fh_pd, fh_pd, Predawn water potential drought response function, MPa, 33
+h_root, h_root, Xylem water potential of roots, MPa, 33
+h_stem, h_stem, Xylem water potential of stem, MPa, 33
+h_canopy, h_canopy, Xylem water potential of canopy, MPa, 33
+r_xylem_bulk, r_xylem_bulk, Bulk xylem resistance to water uptake, MPa/(kg/m^2/s), 33
+r_uptake_bulk, r_uptake_bulk, Bulk total resistance to water uptake, MPa/(kg/m^2/s), 33
+root_uptake, root_uptake, Root water uptake, kg/m^2/s, 41
+
+! Aquifer variables
+water_table_slope, water_table_slope, Water table slope, m/m,1
+seepage_face, seepage_face, Seepage face, m,1
+water_table_height, water_table_height, Water table height, m,1
+water_table_depth, water_table_depth, Water table depth, m,1
+
+! --------------
+! LEAF VARIABLES
+! --------------
+t_leaf_sunlit_wet, t_leaf_sunlit_wet, Skin temperature of sunlit wet leaves, K,113
+t_leaf_sunlit_dry, t_leaf_sunlit_dry, Skin temperature of sunlit dry leaves, K,113
+t_leaf_shaded_wet, t_leaf_shaded_wet, Skin temperature of shaded wet leaves, K,113
+t_leaf_shaded_dry, t_leaf_shaded_dry, Skin temperature of shaded dry leaves, K,113
+!
+co2_chl_sunlit_wet, co2_chl_sunlit_wet, Chloroplastic CO2 of sunlit wet leaves, ppm,113
+co2_chl_sunlit_dry, co2_chl_sunlit_dry, Chloroplastic CO2 of sunlit dry leaves, ppm,113
+co2_chl_shaded_wet, co2_chl_shaded_wet, Chloroplastic CO2 of shaded wet leaves, ppm,113
+co2_chl_shaded_dry, co2_chl_shaded_dry, Chloroplastic CO2 of shaded dry leaves, ppm,113
+!
+g_stom_leaf_sunlit_wet, g_stom_leaf_sunlit_wet, Stomatal conductance for H2O of sunlit wet leaves, mol/m^2/s, 113
+g_stom_leaf_sunlit_dry, g_stom_leaf_sunlit_dry, Stomatal conductance for H2O of sunlit dry leaves, mol/m^2/s, 113
+g_stom_leaf_shaded_wet, g_stom_leaf_shaded_wet, Stomatal conductance for H2O of shaded wet leaves, mol/m^2/s, 113
+g_stom_leaf_shaded_dry, g_stom_leaf_shaded_dry, Stomatal conductance for H2O of shaded dry leaves, mol/m^2/s, 113
+!
+g_heat_leaf_sunlit_wet, g_heat_leaf_sunlit_wet, Total conductance for heat of sunlit wet leaves, mol/m^2/s, 113
+g_heat_leaf_sunlit_dry, g_heat_leaf_sunlit_dry, Total conductance for heat of sunlit dry leaves, mol/m^2/s, 113
+g_heat_leaf_shaded_wet, g_heat_leaf_shaded_wet, Total conductance for heat of shaded wet leaves, mol/m^2/s, 113
+g_heat_leaf_shaded_dry, g_heat_leaf_shaded_dry, Total conductance for heat of shaded dry leaves, mol/m^2/s, 113
+!
+g_co2_leaf_sunlit_wet, g_co2_leaf_sunlit_wet, Total conductance for CO2 of sunlit wet leaves, mol/m^2/s, 113
+g_co2_leaf_sunlit_dry, g_co2_leaf_sunlit_dry, Total conductance for CO2 of sunlit dry leaves, mol/m^2/s, 113
+g_co2_leaf_shaded_wet, g_co2_leaf_shaded_wet, Total conductance for CO2 of shaded wet leaves, mol/m^2/s, 113
+g_co2_leaf_shaded_dry, g_co2_leaf_shaded_dry, Total conductance for CO2 of shaded dry leaves, mol/m^2/s, 113
+!
+g_h2o_leaf_sunlit_wet, g_h2o_leaf_sunlit_wet, Total conductance for H2O of sunlit wet leaves, mol/m^2/s, 113
+g_h2o_leaf_sunlit_dry, g_h2o_leaf_sunlit_dry, Total conductance for H2O of sunlit dry leaves, mol/m^2/s, 113
+g_h2o_leaf_shaded_wet, g_h2o_leaf_shaded_wet, Total conductance for H2O of shaded wet leaves, mol/m^2/s, 113
+g_h2o_leaf_shaded_dry, g_h2o_leaf_shaded_dry, Total conductance for H2O of shaded dry leaves, mol/m^2/s, 113
+
+transpir_leaf_sunlit_wet, transpir_leaf_sunlit_wet, Transpiration rate of sunlit wet leaves, kg/m^2/s, 113
+transpir_leaf_sunlit_dry, transpir_leaf_sunlit_dry, Transpiration rate of sunlit dry leaves, kg/m^2/s, 113
+transpir_leaf_shaded_wet, transpir_leaf_shaded_wet, Transpiration rate of shaded wet leaves, kg/m^2/s, 113
+transpir_leaf_shaded_dry, transpir_leaf_shaded_dry, Transpiration rate of shaded dry leaves, kg/m^2/s, 113
+
+! ---------------
+! SCALAR PROFILES
+! ---------------
+! in musica
+wind, wind_z, wind speed, m/s,5
+co2_air, CO2air_z, air CO2 mixing ratio, ppmv,5
+w_air, wair_z, air water vapour mixing ratio, mol/mol,5
+t_air, Tair_z, air temperature, K,5
+
+! in turb_transfer (for restart files only)
+co2_air_old, CO2air0_z, air co2 concentration from previous time step, ppmv,5
+w_air_old, wair0_z, air water vapour mixing ratio from previous time step, mol/mol,5
+t_air_old, Tair0_z, air temperature from previous time step, K,5
+
+! ---------------------------
+! RAIN INTERCEPTION VARIABLES
+! ---------------------------
+! in rain_intercept
+canopy_water_storage_max, canopy_water_storage_max, Maximum canopy water storage per ground area, kg/m^2,113
+canopy_water_storage, canopy_water_storage, Canopy water storage, kg/m^2,113
+canopy_water_film, canopy_water_film, Canopy water film thickness, m,113
+rain_z, rain_z, Rainfall in canopy, kg/m^2/s,17
+canopy_water_storage_total, canopy_water_storage_total, Total canopy water storage per species, kg/m^2,33
+canopy_interception, canopy_interception, Total canopy water interception, kg/m^2/s,1
+canopy_evaporation, canopy_evaporation, Total canopy water evaporation, kg/m^2/s,1
+! in snow
+snow, SWE, Snow Water Equivalent, kg/m^2,1
+snow_melt, Qsm, Snowmelt, kg/m^2/s,1
+
+! in musica
+p_wet_leaf, p_wet_leaf, Canopy wet fraction, -,113
+rain_fall_soil, Rainf_soil, Rainfall at soil surface, kg/m^2/s,1
+subsurface_runoff, Qsb, Subsurface runoff or lateral drainage, kg/m^2/s,1
+runoff, runoff, Surface runoff or ponding, kg/m^2/s,1
+
+! ---------------
+! OZONE VARIABLES
+! ---------------
+o3_air_ref, o3_air_ref, air O3 concentration at reference level, nmol/mol,1
+o3_air, o3_air_z, air O3 concentration, nmol/mol,5
+!
+flux_o3_soil, flux_o3_soil, Soil net O3 sink, nmol/m^2/s,1
+flux_o3_leaf, flux_o3_leaf, Leaf net O3 sink, nmol/m^2/s,1
+!
+flux_o3_ref, flux_o3_ref, Net O3 Ecosystem Exchange, nmol/m^2/s, 1
+flux_o3_cum, flux_o3_z, O3 flux profile, nmol/m^2/s, 5
+
+flux_o3_cut, flux_o3_cut_z, O3 flux profile on leaf cuticules, nmol/m^2/s, 49
+flux_o3_sto, flux_o3_sto_z, O3 flux profile through leaf stomata, nmol/m^2/s, 49
+!
+vd_o3_air_ref, vd_o3_air_ref, Deposition velocity for O3, cm/s,1
+
+! -------------
+! OCS VARIABLES
+! -------------
+ocs_air_ref, ocs_air_ref, air OCS concentration at reference level, pmol/mol,1
+ocs_air, ocs_air_z, air OCS concentration, pmol/mol,5
+!
+flux_ocs_leaf, flux_ocs_leaf, Leaf net OCS sink, pmol/m^2/s,1
+flux_ocs_soil, flux_ocs_soil, Soil net OCS flux, pmol/m^2/s,1
+flux_ocs_soil_SS, flux_ocs_soil_SS, Steady-state soil net OCS flux, pmol/m^2/s,1
+!
+flux_ocs_ref, flux_ocs_ref, Net OCS Ecosystem Exchange, pmol/m^2/s, 1
+flux_ocs_cum, flux_ocs_z, OCS flux profile, pmol/m^2/s, 5
+!
+vd_ocs_air_ref, vd_ocs_air_ref, Deposition velocity for OCS, cm/s,1
+!
+ocs_soil, ocs_soil, Soil OCS mixing ratio, pptv,9
+
+! -----------------
+! ISOTOPE VARIABLES
+! -----------------
+npp_iso, npp_iso, NPP from isotope module, umol/m^2/s, 33
+netassim_iso, netassim_iso, Net assimilation rate, umol/m^2/s, 33
+
+! isotopic forcing
+d_rain_ox18_ref, d_rain_ox18_ref, 18O/16O ratio of rain water at reference level, permilVSMOW,1
+d_rain_deut_ref, d_rain_deut_ref, D/H ratio of rain water at reference level, permilVSMOW,1
+d_vapour_ox18_ref, d_vapour_ox18_ref, 18O/16O ratio of atmospheric vapour at reference level, permilVSMOW,1
+d_vapour_deut_ref, d_vapour_deut_ref, D/H ratio of atmospheric vapour at reference level, permilVSMOW,1
+d_alim_ox18, d_alim_ox18, 18O/16O ratio of source water at soil bottom, permilVSMOW,1
+d_alim_deut, d_alim_deut, D/H ratio of source water at soil bottom, permilVSMOW,1
+d_co2_air_o18_ref, d_co2_air_o18_ref, 18O/16O ratio of atmospheric CO2 at reference level, permilVPDB-CO2,1
+d_co2_air_c13_ref, d_co2_air_c13_ref, 13C/12C ratio of atmospheric CO2 at reference level, permilVPDB,1
+
+! isotopic composition of soil water
+d_w_soil_ox18, d_w_soil_ox18, 18O/16O ratio of soil water, permilVSMOW,9
+d_w_soil_deut, d_w_soil_deut, D/H ratio of soil water, permilVSMOW,9
+
+! isotopic composition of soil CO2
+d_co2_soil_o18, d_co2_soil_o18, 18O/16O ratio of soil CO2, permilVPDB-CO2,9
+d_co2_soil_c13, d_co2_soil_c13, 13C/12C ratio of soil CO2, permilVPDB,9
+
+! isoflux and isotopic composition of soil CO2 flux
+isoflux_co2_soil_c13, isoflux_co2_soil_c13, 13C/12C soil CO2 isoflux, mol/m^2/s.permilVPDB, 1
+isoflux_co2_soil_o18, isoflux_co2_soil_o18, 18O/16O soil CO2 isoflux, mol/m^2/s.permilVPDB-CO2, 1
+d_flux_co2_soil_c13, d_flux_co2_soil_c13, 13C/12C ratio of soil CO2 efflux, permilVPDB, 1
+d_flux_co2_soil_o18, d_flux_co2_soil_o18, 18O/16O ratio of soil CO2 efflux, permilVPDB-CO2, 1
+
+! isoflux and isotopic composition of turbulent CO2 fluxes
+isoflux_co2_z_c13, isoflux_co2_z_c13, 13C/12C turbulent CO2 isoflux, mol/m^2/s.permilVPDB, 5
+isoflux_co2_z_o18, isoflux_co2_z_o18, 18O/16O turbulent CO2 isoflux, mol/m^2/s.permilVPDB-CO2, 5
+d_NEE_c13, d_NEE_c13, 13C/12C ratio of net ecosystem CO2 flux, permilVPDB, 1
+d_NEE_o18, d_NEE_o18, 18O/16O ratio of net ecosystem CO2 flux, permilVPDB-CO2, 1
+isostorage_co2_z_c13, isostorage_co2_z_c13, 13C/12C canopy air CO2 isostorage, mol/m^2/s.permilVPDB, 5
+isostorage_co2_z_o18, isostorage_co2_z_o18, 18O/16O canopy air CO2 isostorage, mol/m^2/s.permilVPDB-CO2, 5
+
+! isotopic composition of xylem water
+d_w_xylem_ox18, d_w_xylem_ox18, 18O/16O ratio of xylem water, permilVSMOW,33
+d_w_xylem_deut, d_w_xylem_deut, D/H ratio of xylem water, permilVSMOW,33
+
+! isotopic composition of air
+d_vapour_ox18, d_vapour_ox18, 18O/16O ratio of atmospheric vapour, permilVSMOW,5
+d_vapour_deut, d_vapour_deut, D/H ratio of atmospheric vapour, permilVSMOW,5
+d_co2_air_o18, d_co2_air_o18, 18O/16O ratio of atmospheric CO2, permilVPDB-CO2,5
+d_co2_air_c13, d_co2_air_c13, 13C/12C ratio of atmospheric CO2, permilVPDB,5
+
+! isotopic composition of leaf water
+d_w_inleaf_sunlit_wet_ox18, d_w_inleaf_sunlit_wet_ox18, 18O/16O ratio of sunlit wet leaves, permilVSMOW,113
+d_w_inleaf_sunlit_dry_ox18, d_w_inleaf_sunlit_dry_ox18, 18O/16O ratio of sunlit dry leaves, permilVSMOW,113
+d_w_inleaf_shaded_wet_ox18, d_w_inleaf_shaded_wet_ox18, 18O/16O ratio of shaded wet leaves, permilVSMOW,113
+d_w_inleaf_shaded_dry_ox18, d_w_inleaf_shaded_dry_ox18, 18O/16O ratio of shaded dry leaves, permilVSMOW,113
+d_w_inleaf_sunlit_wet_deut, d_w_inleaf_sunlit_wet_deut, D/H ratio of sunlit wet leaves, permilVSMOW,113
+d_w_inleaf_sunlit_dry_deut, d_w_inleaf_sunlit_dry_deut, D/H ratio of sunlit dry leaves, permilVSMOW,113
+d_w_inleaf_shaded_wet_deut, d_w_inleaf_shaded_wet_deut, D/H ratio of shaded wet leaves, permilVSMOW,113
+d_w_inleaf_shaded_dry_deut, d_w_inleaf_shaded_dry_deut, D/H ratio of shaded dry leaves, permilVSMOW,113
+
+! isotopic composition of entire canopy leaf water
+d_w_bulkcanopy_ox18, d_w_bulkcanopy_ox18, 18O/16O ratio of leaf water, permilVSMOW,33
+d_w_bulkcanopy_deut, d_w_bulkcanopy_deut, D/H ratio of leaf water, permilVSMOW,33
+
+! isotopic discrimination for CO2
+discr_co2_leaf_sunlit_wet_o18, discr_co2_leaf_sunlit_wet_o18, 18O/16O CO2 discrimination sunlit wet leaves, permil,113
+discr_co2_leaf_sunlit_dry_o18, discr_co2_leaf_sunlit_dry_o18, 18O/16O CO2 discrimination of sunlit dry leaves, permil,113
+discr_co2_leaf_shaded_wet_o18, discr_co2_leaf_shaded_wet_o18, 18O/16O CO2 discrimination of shaded wet leaves, permil,113
+discr_co2_leaf_shaded_dry_o18, discr_co2_leaf_shaded_dry_o18, 18O/16O CO2 discrimination of shaded dry leaves, permil,113
+discr_co2_leaf_sunlit_wet_c13, discr_co2_leaf_sunlit_wet_c13, 13C/12C CO2 discrimination of sunlit wet leaves, permil,113
+discr_co2_leaf_sunlit_dry_c13, discr_co2_leaf_sunlit_dry_c13, 13C/12C CO2 discrimination of sunlit dry leaves, permil,113
+discr_co2_leaf_shaded_wet_c13, discr_co2_leaf_shaded_wet_c13, 13C/12C CO2 discrimination of shaded wet leaves, permil,113
+discr_co2_leaf_shaded_dry_c13, discr_co2_leaf_shaded_dry_c13, 13C/12C CO2 discrimination of shaded dry leaves, permil,113
+
+! isotopic composition of fluxes
+d_evap_soil_ox18, d_evap_soil_ox18, 18O/16O ratio of soil evaporation, permilVSMOW,1
+d_evap_soil_deut, d_evap_soil_deut, D/H ratio of soil evaporation, permilVSMOW,1
+
+! isotopic composition of sugar pools
+d_sug_pool_o18, d_sug_pool_o18, 18O/16O ratio of sugar pool, permilVSMOW,33
+d_sug_pool_c13, d_sug_pool_c13, 13C/12C ratio of sugar pool, permilVPDB,33
+
+! isotopic composition of current assimilates
+d_assimilates_o18, d_assimilates_o18, 18O/16O ratio of current assimilates, permilVSMOW,33
+d_assimilates_c13, d_assimilates_c13, 13C/12C ratio of current assimilates, permilVPDB,33
+
+
+! ----------------
+! SOLUTE VARIABLES
+! ----------------
+! solute forcing
+solute_rain_cl_ref, solute_rain_cl_ref, cl concentration of rain water at reference level, mg/L,1
+solute_vapour_cl_ref, solute_vapour_cl_ref, cl concentration of atmospheric vapour at reference level, mg/L,1
+solute_alim_cl, solute_alim_cl, cl concentration of source water at soil bottom, mg/L,1
+
+! solute composition of air
+solute_vapour_air_cl, solute_vapour_air_cl, cl concentration of atmospheric vapour, mg/L,5
+
+! solute composition of soil water
+solute_w_soil_cl, solute_w_soil_cl, cl concentration of soil water, mg/L,9
+
+! solute composition of xylem water
+solute_w_xylem_cl, solute_w_xylem_cl, cl concentration of xylem water, mg/L,33
+
+! solute composition of fluxes
+solute_evap_soil_cl, solute_evap_soil_cl, cl concentration of soil evaporation, mg/L,1
+
+
+! --------------------
+! ALLOCATION VARIABLES
+! --------------------
+! per species
+npp, npp, Net primary productivity, umol/m^2/s, 33
+NSC_pool, NSC_pool, size of sugar pool, kgC/m^2, 33
+C_gpp, C_gpp, Gross primary productivity, umol/m^2/s, 33
+C_gppmr, C_gppmr, GPP minus maintenance respiration, umol/m^2/s, 33
+C_npp, C_npp, Net primary productivity, umol/m^2/s, 33
+C_resp_m_foliage, C_resp_m_foliage, Foliage maintenance respiration, umol/m^2/s, 33
+C_resp_m_wood, C_resp_m_wood, Wood maintenance respiration, umol/m^2/s, 33
+C_resp_m_froots, C_resp_m_froots, Fine roots maintenance respiration, umol/m^2/s, 33
+C_resp_g_foliage, C_resp_g_foliage, Foliage growth respiration, umol/m^2/s, 33
+C_resp_g_wood, C_resp_g_wood, Wood growth respiration, umol/m^2/s, 33
+C_resp_g_froots, C_resp_g_froots, Fine roots growth respiration, umol/m^2/s, 33
+C_leaf, C_leaf, carbon stock of leaves, kgC/m^2, 33
+C_wood, C_wood, carbon stock of wood, kgC/m^2, 33
+C_froot, C_froot, carbon stock of fine roots, kgC/m^2, 33
+C_nsc, C_nsc, carbon stock of storage, kgC/m^2, 33
+C_litter_leaf, C_litter_leaf, carbon stock of fallen leaves, kgC/m^2, 33
+C_litter_wood, C_litter_wood, carbon stock of litter from wood, kgC/m^2, 33
+C_litter_froot, C_litter_froot, carbon stock of litter from froots, kgC/m^2, 33
+C_fluxin_leaf, C_fluxin_leaf, carbon flux allocated in leaves, umol/m^2/s, 33
+C_fluxin_wood, C_fluxin_wood, carbon flux allocated in wood, umol/m^2/s, 33
+C_fluxin_froot, C_fluxin_froot, carbon flux allocated in froots, umol/m^2/s, 33
+C_fluxout_leaf, C_fluxout_leaf, carbon flux output from leaves pool, umol/m^2/s, 33
+C_fluxout_wood, C_fluxout_wood, carbon flux output from wood pool, umol/m^2/s, 33
+C_fluxout_froot, C_fluxout_froot, carbon flux output from froots pool, umol/m^2/s, 33
+C_fluxin_litter_leaf, C_fluxin_litter_leaf, carbon flux in leaves litter, umol/m^2/s, 33
+C_fluxin_litter_wood, C_fluxin_litter_wood, carbon flux in wood litter, umol/m^2/s, 33
+C_fluxin_litter_froot, C_fluxin_litter_froot, carbon flux in froots litter, umol/m^2/s, 33
+C_storage, C_storage, carbon stock of storage, kgC/m^2, 33
+
+
+! --------
+! TEMPLATE
+! --------
+templatearr, Template_z, dummy variable, -,5
+
+
+! ---------------
+! NOT USED YET...
+! ---------------
+d_13co2_bole_resp, d_13co2_bole_resp, 13C/12C ratio of bole respiration, permilVPDB,49
+
+! isotopic composition of pools
+d_h2o18_leaf_surf, d_h2o18_leaf_surf, 18O/16O ratio of leaf intercepted water, permilVSMOW,1
+d_h2o18_leaf_alim, d_h2o18_leaf_alim, 18O/16O ratio of leaf source water, permilVSMOW,113
+d_13co2_leaf_pool, d_13co2_leaf_pool, 13C/12C ratio of leaf pool, permilPDB,113
+d_13co2_root_resp, d_13co2_root_resp, 13C/12C ratio of root respiration, permilPDB,1
+d_13co2_het_resp, d_13co2_het_resp, 13C/12C ratio of heterotrophic respiration, permilPDB,1

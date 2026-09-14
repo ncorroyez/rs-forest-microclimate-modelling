@@ -1,0 +1,242 @@
+  ! -*- Mode: F90 -*-
+
+  ! ----------------------------------------------------------------------------
+  !
+  ! MuSICA v3.0 soil namelist
+  !
+  ! Setup soil for a MuSICA simulation
+  !
+  ! ----------------------------------------------------------------------------
+  !
+  ! Contact and bug report: jerome.ogee@inra.fr
+  !
+  ! Notes
+  !   1. Names are case insensitive.
+  !      DEBUG = .true.
+  !      debug = .True.
+  !   2. Commenting out (or deleting) lines uses the default settings for that option.
+  !      ! debug=.true.
+  !   3. File names, directories and any other string must be quoted with
+  !      single (') or double (") quotes.
+  !      file = 'file.nc'
+  !      string = "file.nc"
+  !   4. Strings are case sensitive.
+  !      string1 = 'anotherstring'
+  !      string2 = 'AnotherString'
+  !   5. All paths are either absolute or relative to the MuSICA executable.
+  !      file = '/absolute/path/to/file.nc'
+  !      file = 'relative/path/to/file.nc'
+  !   6. Multiple values for an array are delimited by commas.
+  !      array = 0, 1, 2, 3
+  !      chararray = 'one, 'two', 'three'
+  !   7. Logical switches are case insensitive .true., .false. or .t., .f.
+  !      switch = .True.
+  !
+  ! ----------------------------------------------------------------------------
+
+  ! ----------------------------------------------------------------------------
+  ! SOIL - soil specific flags - namelist of soil_transfer module
+  &soilctl
+  !
+  ! Soil grid type
+  ! 1 = regular grid
+  ! 2 = irregular grid (thinner layers close to soil surface)
+  SOIL_GRID_TYPE = 2
+  !
+  ! Soil transfer model boundary condition (BC) options
+  !
+  ! The BC for deep water flow can be either forced by water table
+  ! height (NEUMANN_WATER_BOT_FLAG = .false., only if provided in forcing file)
+  ! or by purely gravitationnal water flow (NEUMANN_WATER_BOT_FLAG = .true.)
+  ! >> Default = .true. (gravitational water flow)
+  NEUMANN_WATER_BOT_FLAG = .true.
+  !
+  ! The BC for deep heat flow can be either forced by a simple
+  ! force-restore deep temperature calculation (NEUMANN_TEMP_BOT_FLAG = .false.)
+  ! or by a zero heat flux condition (NEUMANN_TEMP_BOT_FLAG = .true.)
+  ! >> Default = .false. (force-restore deep temperature calculation)
+  NEUMANN_TEMP_BOT_FLAG = .false.
+  !
+  ! Soil thermal conductivity model
+  ! This flag allows to account for the contribution of water vapour
+  ! in the calculation of thermal conductivity
+  THERMAL_COND_AIRDRY_FLAG = .true.
+  !
+  ! Root extraction model
+  ! This flag allows to account for possible leakage
+  ! from roots to drier soil layers
+  ROOT_LEAKAGE_FLAG = .true.
+  !
+  ! Root cavitation model
+  ! This flag allows to account for possible cavitation of roots
+  ROOT_CAVITATION_FLAG = .false.
+  !
+  ! Soil maximum depth [m]
+  SOIL_DEPTH_MAX = 1.6
+  !
+  ! Bare soil albedo and emissivity (assumed independent of soil moisture, solar
+  ! zenith angle,...)
+  ! >> after Eglin's PhD (2008, p. 212) for dry soil with litter (0.03-0.04 less if wet)
+  ALBEDO_SOIL_VIS = 0.15
+  ALBEDO_SOIL_NIR = 0.28
+  EPSI_SOIL = 0.97
+  !
+  ! Number of depths and depth positions used for depth-dependant soil parameters
+  ! The model will then interpolate these user-defined profiles
+  ! to the soil grid of the model
+  !
+  ! Important note: if SOIL_DEPTH_MAX is deeper than the last value in DEPTH, then
+  ! the depth-dependant parameter profiles are
+  ! assumed uniform from max(DEPTH) to SOIL_DEPTH_MAX
+  ! >> after Benham et al. 2012 (Table 2)
+  N_DEPTH = 4
+  DEPTH = 0.04, 0.14, 0.28, 0.80
+  !
+  ! Soil matrix composition (m3/m3 of soil matter, i.e. must sum to unity)
+  ! in quartz, non-quartz minerals and organic matter
+  ! at the different depths DEPTH
+  ! >> after Benham et al. 2012 (Table 2)
+  QUARTZ_FRAC    = 0.10, 0.07, 0.06, 0.06
+  ORGANIC_FRAC   = 0.06, 0.03, 0.01, 0.00
+  NONQUARTZ_FRAC = 0.90, 0.93, 0.94, 0.94
+  !
+  ! Soil bulk density (g/cm3)
+  ! Not used for the moment. Porosity set to saturated humidity.
+  ! >> after Benham et al. 2012 (Table 2)
+  BULK_DENSITY = 0.95, 1.1, 1.2, 1.2
+  !
+  ! Soil retention curve model parameters
+  !
+  ! We use either the model from VanGenutchen-Burdine (RETENTION_CURVE_MODEL_FLAG=1)
+  ! or the model from VanGenutchen-Mualem (RETENTION_CURVE_MODEL_FLAG=2)
+  ! or the model of VanGenuchten (with m=1, RETENTION_CURVE_MODEL_FLAG=3)
+  ! In all cases:
+  !
+  ! h = ( h_s*((theta-theta_r)/(theta_sat-theta_r))^(-1/m) - 1 )^(1/n)
+  !
+  ! with:
+  !
+  ! h_s     = water head parameter (m)
+  ! theta_r = permanent residual soil moisture content (m3/m3)
+  ! m       = 1-2/n if VanGenuchten-Burdine
+  !         = 1-1/n if VanGenuchten-Mualem
+  !         = 1    if PDT function from Vereecken et al. 1989 (see Wagner et al. 2001 Eq. 6)
+  !
+  ! Note: theta_r > 0.02 m3/m3 in the model
+  !
+  ! >> from data in Benham et al. 2012 (Table 2) and PDT from Vereecken et al. 1989 (see Wagner et al. 2001 Eq. 6)
+  RETENTION_CURVE_MODEL_FLAG = 3
+  THETA_SAT_SOIL = 0.54, 0.50, 0.47, 0.47
+  THETA_RES_SOIL = 0.02, 0.02, 0.02, 0.02
+  H_S_SOIL       = 1.48, 2.17, 2.81, 2.81
+  N_SOIL        = 1.05, 1.05, 1.05, 1.05
+  !
+  ! Unsaturated soil hydraulic conductivity parameters
+  !
+  ! We use either the model from Brooks and Corey (1964) (HYDRAULIC_COND_MODEL_FLAG=1)
+  ! or the model from Van Genutchen (1980) (HYDRAULIC_COND_MODEL_FLAG=2)
+  !
+  ! If Brooks and Corey (1964) then:
+  !
+  ! K = K_sat * (theta/theta_sat)^eta
+  !
+  ! with:
+  !
+  ! Ksat = soil hydraulic conductivity at saturation (m/day)
+  ! M    = the particle size distribution curve parameter
+  ! eta  = 2/m/n + 2 + 2*p
+  ! p    = M/m - 1
+  !
+  ! If Van Genutchen (1980) then:
+  !
+  !  K = K_sat *           ((theta-theta_r)/(theta_sat-theta_r))^M
+  !            * (1 - (1 - ((theta-theta_r)/(theta_sat-theta_r))^(1/m))^m)^2
+  !
+  ! with:
+  !
+  ! M = 0.5
+  HYDRAULIC_COND_MODEL_FLAG = 2
+  BIG_M_SOIL  = 0.5, 0.5, 0.5, 0.5
+  ! >> from data in Benham et al. 2012 (Table 2) and PDT from Saxton et al. 1986 (see Wagner et al. 2001 Eq. 34)
+  KSAT_SOIL = 0.106, 0.041, 0.013, 0.001
+  !
+  ! Soil tortuosity (for water vapour and CO2 transport)
+  ! Default = 1
+  TORTUOSITY_MODEL_FLAG = 1
+  !
+  ! Parameters for soil surface aerodynamic and pore_space transport resistances
+  !
+  ! ra = ra_coeff/windspeed
+  !
+  ! rs = MAX(rs_max*(1 - theta/theta0), rs_min)
+  !
+  ! ra_coeff = aerodynamic coefficient (-)
+  ! rs_max = maximum soil surface resistance to water vapour transport (s m-1)
+  ! rs_min = minimum soil surface resistance to water vapour transport (s m-1)
+  ! theta0 = smallest soil moisture content for which rs=rs_min (m3/m3)
+  ! RA_SOIL_COEFF = 33.
+  SOIL_RESISTANCE_MODEL_FLAG = 1
+  RS_SOIL_MIN = 600.
+  RS_SOIL_MAX = 2580.
+  RS_SOIL_MOISTURE_0 = 0.194
+  !
+  ! Parameter for accounting for preferential flows during rain events
+  !
+  ! In some cases, when it rains on a very dry soil, it is very hard to
+  ! get the soil water potential dynamics and the latter can go to
+  ! large positive values (as if the soil matric was bursting) because the water
+  ! storage capacity (estimated using previous time step values) is always too
+  ! low (forcing large step changes in the matric potential to compensate)
+  ! To go around this, it is best to first redistribute a fraction of the rain
+  ! along the soil column, up to a given depth, as if there were preferential
+  ! flows (or cracks) over that depth
+  ! >> Default = 0.
+  CRACK_FRACTION = 0.0
+  CRACK_DEPTH = 0.05
+  !
+  ! Parameters for initialisation of soil_moisture and temperature in the soil
+  ! ONLY used if not in restart file, ie, the model first verifies that soil
+  ! temperature and moisture profiles are not in the restart file, and only if
+  ! they are not, it reads those parameters and use them to create interpolated
+  ! profiles for the entire soil grid.
+  ! Note: exactly 4 depths are needed (not 1 or 2 only)
+  INIT_DEPTH = 0.0, 0.4, 0.6, 0.8
+  INIT_SOIL_TEMPERATURE = 283., 278., 278., 278.
+  INIT_SOIL_MOISTURE = 0.4, 0.4, 0.4, 0.4
+  !
+  ! Parameters for soil (heterotrophic+autotrophic) respiration
+  ! R25_SOIL is the respiration at 25C in micromol/m2/s
+  !
+  ! The function is:
+  !
+  ! F = F25 * Q10^(T-25)/10 * ((w-w_res)/(wsat-w_res))^exponent
+  ! >> from ???
+  R25_SOIL = 3.7e-6
+  Q10_SOIL = 2.7
+  RESP_SOIL_EXP = 0
+  !
+  ! Additional flags for BCs and testing soil module (see Haverd & Cuntz JHydrol 2010)
+  ! Default = .false.
+  IMPERVIOUS_BEDROCK_FLAG = .false.
+  INOUT_WATER_BOT_FLAG    = .false.
+  INOUT_TEMP_BOT_FLAG     = .false.
+  /
+
+  ! ----------------------------------------------------------------------------
+  ! FOR LATERAL DRAINAGE - namelist of soil_transfer module
+  ! IMPORTANT NOTE: if set up, then some variables above are reset:
+  !     soil_depth_max = aquifer_height + distance_to_river*(soil_slope - aquifer_slope)
+  !     neumann_water_bot_flag = .true. (i.e. if WT_depth from forcing file is not used)
+  !     impervious_bedrock_flag = .true.
+  &h2s1ctl
+  aquifer_height    = 3.
+  hillslope_length  = 0.
+  soil_slope        = 0.03
+  aquifer_slope     = 0.03
+  distance_to_river = 15.
+  ! aquifer_height    = 3.   ! in m
+  ! hillslope_length  = 0.  ! in m
+  ! soil_slope        = 0.03 ! in m/m
+  ! aquifer_slope     = 0.03 ! in m/m
+  ! distance_to_river = 15.  ! in m
+  /

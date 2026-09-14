@@ -1,0 +1,82 @@
+# ==============================================================================
+# Jeu de figures NUMÉROTÉ façon article (Chap 1) — ALIGNÉ SUR LE MANUSCRIT
+# (Chapitre1/redaction/manuscript_chap1_EN.md). Méthode COURANTE : attribution =
+# SENSIBILITÉ (plus de Shapley), référence ΔTmax = station CHS41 1,5 m, MuSICA
+# v3.2.3 iter + forçage station (en attente), VCI CORRIGÉ (hauteurs normalisées).
+#
+# Réordonner / changer = éditer MAIN / ANNEX ci-dessous (ne jamais renommer les
+# fichiers à la main). Chaque entrée porte son SCRIPT générateur (4e champ) et un
+# flag REFRESH = TRUE si la figure sera rafraîchie par le re-run v3.2.3/station.
+# Sortie = Fig1_*… (corps) + A1_*… (annexes) + manifeste tab_article_figures.csv
+#          + liste des MANQUANTES.
+#   Rscript scripts/make_article_figure_set.R
+# ==============================================================================
+suppressMessages({ library(here) })
+OUT <- here::here("Chapitre1/redaction/figures/article_v323")   # numbered set lives in the Chap1 folder
+unlink(OUT, recursive = TRUE); dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+R <- function(p) here::here(p)   # chemin relatif repo
+
+# ---- CORPS (Fig 1–6, ordre du manuscrit) -------------------------------------
+# list(id, titre, source_sans_ext, script, refresh_au_rerun)
+MAIN <- list(
+  list("Fig1","site_typology_composite",     R("out_files/Chapter1/figures/FigComposite_typology_site"), "c1_fig1_composite.R", FALSE),  # carte+profils+VCI (cLHS+HOBO)
+  list("Fig2","deltadelta_per_archetype",    R("out_files/Chapter1/figures/FigSh_deltadelta_perarchetype_norm"),"NORM=sd c1_deltadelta_perplot.R", TRUE),  # ΔTmax/Δvar & Δslope/Δvar, normalisé SD intra-cluster, par archétype
+  list("Fig3","deltadelta_per_plot",         R("out_files/Chapter1/figures/FigSh_deltadelta_perplot_norm"),     "NORM=sd c1_deltadelta_perplot.R", TRUE),  # idem par placette (native dispo sans _norm)
+  list("Fig4","validation_glass_ceiling",    R("outputs/figures_pipeline_z05/fig_validation_perplot"),     "pipeline/07_validation.R", TRUE),
+  list("Fig5","forward_validation_percluster",R("out_files/Chapter1/figures/FigSh_forward_curve"),         "c1_forward_curve.R", TRUE)  # courbe r cumulé (remplace la grille scatter)
+)
+# NB: l'ancien Fig6 (gradient vertical, illustration mécaniste n=4) est descendu en annexe A4 (voir ANNEX)
+
+# ---- ANNEXES (lettres du manuscrit : A potency, B residual, C footprint, ------
+#      D dispersion, E collinéarité, F attribution observationnelle) ------------
+ANNEX <- list(
+  list("A1a","sensitivity_potency",          R("out_files/Chapter1/figures/FigSh_sensitivity_potency"),    "c1_sensitivity_figure.R", TRUE),
+  list("A1b","sensitivity_local",            R("out_files/Chapter1/figures/FigSh_sensitivity_local"),      "c1_sensitivity_figure.R", TRUE),
+  list("A1c","sensitivity_asymmetry",        R("out_files/Chapter1/figures/FigSh_sensitivity_asymmetry_norm"), "NORM=sd c1_sensitivity_asymmetry.R", TRUE),  # courbure locale : côté + vs − SD = saturation (sans sim), §3.2
+  list("A1d","importance_bootstrap_colead",  R("out_files/Chapter1/figures/FigSh_importance_bootstrap_colead"), "c1_importance_bootstrap.R", TRUE),  # IC bootstrap : LAI−LAD straddle 0 en P4 → co-lead réel (durcit Fig2)
+  list("A1e","deltadelta_per_archetype_hot", R("out_files/Chapter1/figures/FigSh_deltadelta_perarchetype_norm_hot"),"NORM=sd PERIOD=hot c1_deltadelta_perplot.R", TRUE),  # Fig2 sur jours chauds
+  list("A1f","deltadelta_per_plot_hot",      R("out_files/Chapter1/figures/FigSh_deltadelta_perplot_norm_hot"),     "NORM=sd PERIOD=hot c1_deltadelta_perplot.R", TRUE),  # Fig3 sur jours chauds
+  list("A1g","deltadelta_per_archetype_native", R("out_files/Chapter1/figures/FigSh_deltadelta_perarchetype"), "c1_deltadelta_perplot.R (NORM=native)", TRUE),  # unités physiques (texte §3.2 para 2)
+  list("A1h","deltadelta_per_plot_native",       R("out_files/Chapter1/figures/FigSh_deltadelta_perplot"),      "c1_deltadelta_perplot.R (NORM=native)", TRUE),
+  list("A2", "lad_vci_scaling",              R("out_files/Chapter1/figures/FigSh_lad_vci"),                "c1_lad_vci.R [VCI corrigé]", TRUE),
+  list("A3", "h2_controlled_topheavy",       R("outputs/figures_pipeline/annex/fig_h2_controlled_topheavy"), "scripts/make_h2_controlled_topheavy.R", TRUE),  # test H2 contrôlé : top-heavy refroidit + à LAI/Hmax fixés (2nd-ordre)
+  list("A4", "vertical_gradient",            R("outputs/figures_pipeline/annex/fig_vertical_profiles_legacy"), "scripts/make_vertical_profiles_wind_rh_vpd.R", TRUE),  # ex-Fig6 : gradient vertical (illustration mécaniste, n=4 centroïdes)
+  list("B1", "residual_vs_topo",             R("outputs/figures_pipeline/annex/fig_residual_vs_topo"),     "scripts/make_residual_vs_topo.R", TRUE),
+  list("C1", "footprint_radius_sensitivity", R("out_files/Chapter1/figures/FigAnnex_radius_sensitivity"),  "c1_radius_figure.R", TRUE),
+  list("D1", "clhs_trait_dispersion",        R("out_files/Chapter1/figures/FigAnnex_clhs_trait_dispersion"),"c1_clhs_trait_dispersion.R", FALSE),
+  list("E1", "trait_collinearity",           R("out_files/Chapter1/figures/FigAnnex_corrplot_traits"),     "pipeline/12_corrplot_traits.R [VCI corrigé]", FALSE),
+  list("E2", "trait_collinearity_fpc",       R("out_files/Chapter1/figures/FigAnnex_corrplot_traits_fpc"), "pipeline/12b_corrplot_traits_fpc.R [VCI corrigé]", FALSE),
+  list("E3", "pca_recover_clusters_vci",     R("out_files/Chapter1/figures/FigSh_pca_clusters"),           "c1_pca_recover_clusters.R [VCI corrigé]", FALSE),  # ACP avec/sans VCI → typologie recouvrée
+  list("F4", "lai_fcover_separability",      R("out_files/Chapter1/figures/FigSh_lai_fcover_separability"),"c1_lai_fcover_separability.R", FALSE),
+  list("F1", "obs_attribution",              R("out_files/Chapter1/figures/FigSh_obs_attribution"),        "c1_obs_attribution.R [VCI corrigé]", TRUE),
+  list("F2", "obs_attribution_crosscheck",   R("out_files/Chapter1/figures/FigSh_obs_attribution_crosscheck"),"c1_obs_attribution.R [VCI corrigé]", TRUE),
+  list("F3", "hobo_coverage",                R("out_files/Chapter1/figures/FigSh_hobo_coverage"),          "c1_hobo_coverage.R", FALSE)
+)
+
+# ---- copie numérotée + manifeste ---------------------------------------------
+copy_set <- function(items, kind) {
+  do.call(rbind, lapply(items, function(it) {
+    id <- it[[1]]; title <- it[[2]]; src <- it[[3]]; script <- it[[4]]; refresh <- it[[5]]
+    png <- paste0(src, ".png"); pdf <- paste0(src, ".pdf")
+    ok_png <- file.exists(png); ok_pdf <- file.exists(pdf)
+    if (ok_png) file.copy(png, file.path(OUT, sprintf("%s_%s.png", id, title)), overwrite = TRUE)
+    if (ok_pdf) file.copy(pdf, file.path(OUT, sprintf("%s_%s.pdf", id, title)), overwrite = TRUE)  # vecteur pour soumission
+    # estampille de la SOURCE (date de génération) : trace la fraîcheur après rerun
+    mtime <- if (ok_png) format(file.info(png)$mtime, "%Y-%m-%d %H:%M") else NA_character_
+    data.frame(kind = kind, id = id, title = title,
+               source = sub(paste0(here::here(), "/"), "", png),
+               script = script, refresh_rerun = refresh,
+               status = if (ok_png) (if (ok_pdf) "png+pdf" else "png-only") else "MISSING",
+               source_mtime = mtime)
+  }))
+}
+man <- rbind(copy_set(MAIN, "main"), copy_set(ANNEX, "annex"))
+write.csv(man, file.path(OUT, "tab_article_figures.csv"), row.names = FALSE)
+
+cat(sprintf("\n=== Jeu de figures article v3.2.3/station -> %s ===\n", basename(OUT)))
+print(man[, c("kind","id","title","script","refresh_rerun","status","source_mtime")], row.names = FALSE)
+miss <- man[man$status == "MISSING", ]
+if (nrow(miss)) cat(sprintf("\n%d MANQUANTE(S) (a (re)generer) :\n  %s\n",
+    nrow(miss), paste(sprintf("%s = %s  [%s]", miss$id, miss$title, miss$script), collapse="\n  ")))
+cat(sprintf("\n%d figures sur %d rafraichies par le re-run v3.2.3/station.\n",
+    sum(man$refresh_rerun), nrow(man)))

@@ -1,0 +1,5 @@
+version,scope,pearson,spearman,amp
+v320,toutes (53),0.92,0.86,0.44
+v320,sans trouées (44),0.74,0.79,0.41
+v323,toutes (53),0.6,0.9,0.2
+v323,sans trouées (44),0.81,0.84,0.51
